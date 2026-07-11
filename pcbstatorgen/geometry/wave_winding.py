@@ -53,7 +53,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Sequence
 
-from pcbstatorgen.config import MotorConfig
+from pcbstatorgen.config import CoilTopology, MotorConfig
 
 __all__ = [
     "CoilSegment",
@@ -135,6 +135,16 @@ class PhaseCoil:
     layer_idx: int
     segments: list[CoilSegment]
     phase_name: str
+    topology: CoilTopology = field(default=CoilTopology.SERPENTINE)
+    """Coil path topology — informs the KiCad writer and the dashboard."""
+    layer_pair: tuple[int, int] | None = field(default=None)
+    """For SPIRAL topology: ``(primary_layer_idx, secondary_layer_idx)``.
+    The primary layer holds the inward spiral; the secondary holds the
+    outward return spiral.  ``None`` for all other topologies."""
+    center_via_positions: list[tuple[float, float]] = field(default_factory=list)
+    """(x, y) centres of spiral centre-vias [m].  Populated by
+    :class:`~pcbstatorgen.geometry.coil_generators.SpiralCoilGenerator`
+    so the KiCad writer knows where to place the inter-layer transition vias."""
 
     # ------------------------------------------------------------------
     # Derived geometry
@@ -447,6 +457,7 @@ class WaveWindingGenerator:
                 layer_idx=layer_idx,
                 segments=[],
                 phase_name=phase_name,
+                topology=CoilTopology.SERPENTINE,
             )
 
         segments: list[CoilSegment] = []
@@ -481,4 +492,5 @@ class WaveWindingGenerator:
             layer_idx=layer_idx,
             segments=segments,
             phase_name=phase_name,
+            topology=CoilTopology.SERPENTINE,
         )
