@@ -5,6 +5,10 @@
             "repository": "https://gitlab.com/kicad/code/kicad-python.git",
             "branch": "stable",
             "description": "Official Python bindings repository for KiCad 10 IPC API."
+        },
+        "motor_papers": {
+            "path": "docs/papers/",
+            "description": "Technical literature, equations, and design constraints for BOTH axial flux (rotary) and linear (translational) PCB motors, covering pole pitch, track width, and multi-layer winding topologies."
         }
     }
 }
