@@ -68,3 +68,7 @@ ELMERSOLVER_STARTINFO
 # Jupyter notebooks (optional — uncomment if used for exploration)
 # .ipynb_checkpoints/
 # *.ipynb
+
+# OpenCode & Sessions exports
+session-ses*
+sessions-ses*
