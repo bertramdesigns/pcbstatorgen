@@ -130,6 +130,11 @@ _WIZ_DEFAULTS: dict = {
     "adv_min_trace_mil": 5.0,
     "adv_min_space_mil": 5.0,
     "adv_air_gap_mm": 0.5,
+    "adv_board_width_mm": 20.0,
+    # Wizard state
+    "wizard_started": False,
+    # Gap between magnets (derived: pitch = width + gap)
+    "gap_between_magnets_mm": 2.0,
 }
 
 for k, v in _WIZ_DEFAULTS.items():
@@ -188,16 +193,19 @@ def build_config_from_wizard() -> LinearMotorConfig | None:
         arrangement   = st.session_state["magnet_arrangement"]
         back_iron_m   = mm(st.session_state["back_iron_mm"])
         mw            = mm(st.session_state["magnet_width_mm"])
+        gap_m         = mm(st.session_state.get("gap_between_magnets_mm", 2.0))
+        pole_pitch_m  = mw + gap_m                        # pitch = width + gap
         height_budget = mm(st.session_state["height_budget_mm"])
         supply_v      = st.session_state["supply_v"]
         max_i         = st.session_state["max_current_a"]
         coil_topo     = st.session_state["coil_topology"]
         n_layers      = st.session_state.get("layer_count_override") or 6
+        board_width_m = mm(st.session_state.get("board_width_override_mm",
+                                                  preset["board_width_mm"]))
 
-        travel_m      = mm(preset["travel_mm"])
-        mass_kg       = preset["mass_g"] / 1000.0
-        board_width_m = mm(preset["board_width_mm"])
-        ffc_count     = preset["ffc"]
+        travel_m  = mm(preset["travel_mm"])
+        mass_kg   = preset["mass_g"] / 1000.0
+        ffc_count = preset["ffc"]
 
         # Derive air gap from height budget
         hz_calc = HeightStackCalculator()
@@ -226,7 +234,7 @@ def build_config_from_wizard() -> LinearMotorConfig | None:
             travel_m=travel_m,
             magnet_dims_m=(mw, mm(10), mm(4)),
             magnet_count=10,
-            magnet_pitch_m=mm(12),
+            magnet_pitch_m=pole_pitch_m,            # width + gap
             magnet_arrangement=arrangement,
             back_iron_thickness_m=back_iron_m,
             coil_topology=coil_topo,
@@ -333,6 +341,36 @@ def _nav_buttons(step: int) -> int:
 
 
 def render_wizard() -> LinearMotorConfig | None:
+    # ── Welcome / landing screen ────────────────────────────────────────────
+    if not st.session_state.get("wizard_started", False):
+        st.markdown("## Welcome to pcbstatorgen")
+        st.markdown(
+            "This tool designs a **linear coreless PCB stator** for a motorised "
+            "fader — the kind used in studio mixing consoles and DAW controllers.  "
+            "Answer a few plain-English questions and it will work out all the "
+            "motor parameters, preview the magnetic field and force, then write "
+            "the copper traces directly to your KiCad 10 PCB."
+        )
+        st.info(
+            "**You'll need to know:**\n"
+            "- What size fader you're building (60 mm / 75 mm / 100 mm)\n"
+            "- How much total height is available inside your product\n"
+            "- What power supply voltage and current limit your drive circuit has\n\n"
+            "That's it — the wizard works out everything else."
+        )
+        col_start, _ = st.columns([1, 3])
+        if col_start.button("🚀  Start the wizard →", type="primary", use_container_width=True):
+            st.session_state["wizard_started"] = True
+            st.session_state["wizard_step"] = 0
+            st.rerun()
+        st.divider()
+        st.caption(
+            "💡 Prefer to set every parameter yourself?  "
+            "Switch to **⚙️ Advanced** mode in the sidebar."
+        )
+        return None
+
+    # ── Step rendering ───────────────────────────────────────────────────────
     step = st.session_state["wizard_step"]
     st.progress((step + 1) / _N_STEPS, text=_STEP_TITLES[step])
     st.divider()
@@ -462,6 +500,21 @@ def _step1_envelope() -> None:
         )
         st.session_state["max_current_a"] = float(max_i)
         eli5("Set by your gate driver IC's current rating, not by what you think you need. Check the datasheet.")
+
+        # Board width override (defaults to preset value)
+        preset = _FADER_PRESETS.get(st.session_state["fader_preset"],
+                                     _FADER_PRESETS["Studio 75 mm"])
+        board_w = st.number_input(
+            "Board width (mm)",
+            min_value=1.0, max_value=100.0,
+            value=float(st.session_state.get("board_width_override_mm",
+                                              preset["board_width_mm"])),
+            step=0.5, format="%.1f",
+            help="PCB dimension perpendicular to the travel axis. Min 1 mm.",
+        )
+        st.session_state["board_width_override_mm"] = board_w
+        eli5("How wide the PCB is (the dimension the coils cross). "
+             "Usually set by the magnet length plus a few mm of edge clearance.")
 
     with col2:
         # Height stack diagram
@@ -620,23 +673,54 @@ def _step3_magnet_arrangement() -> None:
             st.rerun()
         st.divider()
 
-    # Magnet width
-    preset = _FADER_PRESETS.get(st.session_state["fader_preset"], _FADER_PRESETS["Studio 75 mm"])
+    # Magnet size — width + gap inputs
     st.subheader("Magnet size")
-    mw = st.slider(
-        "Magnet width along travel axis (mm)",
-        min_value=4.0, max_value=11.5, value=st.session_state["magnet_width_mm"],
-        step=0.5,
-        help="Must be ≥ 0.3 mm smaller than pole pitch (12 mm) for assembly clearance",
+    col_mw, col_gap = st.columns(2)
+
+    with col_mw:
+        mw = st.number_input(
+            "Magnet width along travel axis (mm)",
+            min_value=1.0,
+            max_value=50.0,
+            value=float(st.session_state["magnet_width_mm"]),
+            step=0.1,
+            format="%.2f",
+            help="Width of each magnet in the direction the fader moves",
+        )
+        st.session_state["magnet_width_mm"] = mw
+        eli5(
+            "How wide each magnet is (measured along the travel direction). "
+            "Wider magnets give a stronger field but leave less room between them."
+        )
+
+    with col_gap:
+        gap = st.number_input(
+            "Distance between magnets (mm)",
+            min_value=0.0,
+            max_value=20.0,
+            value=float(st.session_state.get("gap_between_magnets_mm", 2.0)),
+            step=0.1,
+            format="%.2f",
+            help="0 = edge-to-edge (magnets touching). Larger gap allows a Halbach interleave magnet.",
+        )
+        st.session_state["gap_between_magnets_mm"] = gap
+        eli5(
+            "The gap between adjacent magnets. "
+            "Zero is fine (edge-to-edge). A gap ≥ 2 mm is needed to fit a "
+            "Halbach interleave magnet for a field boost."
+        )
+
+    pole_pitch = mw + gap
+    st.caption(
+        f"Pole pitch (magnet width + gap): **{pole_pitch:.2f} mm** — "
+        f"this is the spatial period of the magnetic field."
     )
-    st.session_state["magnet_width_mm"] = mw
-    gap_mm = 12.0 - mw
-    icon = badge(gap_mm, 2.0, 0.5, higher_is_better=True)
-    st.caption(f"Inter-magnet gap: **{gap_mm:.1f} mm** {icon}")
-    eli5(
-        "The gap between adjacent magnets must be ≥ 0.3 mm to physically fit them together. "
-        "Larger gap = more room for a Halbach interleave magnet, but less magnet material per pole."
-    )
+    if selected_arr in (MagnetArrangement.HALBACH, MagnetArrangement.HALBACH_BACK_IRON) and gap < 1.0:
+        st.warning(
+            f"⚠️ Gap = {gap:.1f} mm is very small for a Halbach array. "
+            "The interleave magnets need at least ~1 mm width to be effective. "
+            "Consider increasing the gap or switching to a simpler arrangement."
+        )
 
 
 def _step4_force_and_feel() -> None:
@@ -841,21 +925,31 @@ def render_advanced() -> LinearMotorConfig | None:
     col_l, col_r = st.columns(2)
     with col_l:
         st.markdown("**Mechanical**")
-        st.session_state["adv_travel_mm"] = st.slider(
-            "Travel (mm)", 40.0, 120.0, st.session_state["adv_travel_mm"], 5.0)
-        st.session_state["adv_board_width_mm"] = st.slider(
-            "Board width (mm)", 10.0, 40.0, st.session_state["adv_board_width_mm"], 1.0)
-        st.session_state["adv_magnet_pitch_mm"] = st.slider(
-            "Magnet pitch / pole pitch (mm)", 6.0, 20.0,
-            st.session_state["adv_magnet_pitch_mm"], 0.5)
-        st.session_state["magnet_width_mm"] = st.slider(
-            "Magnet width (mm)", 4.0, 11.5, st.session_state["magnet_width_mm"], 0.5)
-        st.session_state["adv_magnet_h_mm"] = st.slider(
-            "Magnet height (mm)", 2.0, 8.0, st.session_state["adv_magnet_h_mm"], 0.5)
-        st.session_state["adv_air_gap_mm"] = st.slider(
-            "Air gap (mm)", 0.2, 3.0, st.session_state["adv_air_gap_mm"], 0.1)
-        st.session_state["adv_remanence_t"] = st.slider(
-            "Magnet Br (T)", 0.9, 1.5, st.session_state["adv_remanence_t"], 0.01)
+        st.session_state["adv_travel_mm"] = st.number_input(
+            "Travel (mm)", min_value=10.0, max_value=200.0,
+            value=float(st.session_state["adv_travel_mm"]), step=1.0, format="%.1f")
+        st.session_state["adv_board_width_mm"] = st.number_input(
+            "Board width (mm)", min_value=1.0, max_value=100.0,
+            value=float(st.session_state["adv_board_width_mm"]), step=0.5, format="%.1f",
+            help="Minimum 1 mm. Dimension perpendicular to the travel axis.")
+        st.session_state["adv_magnet_pitch_mm"] = st.number_input(
+            "Pole pitch / magnet pitch (mm)", min_value=1.0, max_value=50.0,
+            value=float(st.session_state["adv_magnet_pitch_mm"]), step=0.5, format="%.2f")
+        st.session_state["magnet_width_mm"] = st.number_input(
+            "Magnet width (mm)", min_value=0.5, max_value=float(st.session_state["adv_magnet_pitch_mm"]),
+            value=float(min(st.session_state["magnet_width_mm"],
+                            st.session_state["adv_magnet_pitch_mm"])),
+            step=0.1, format="%.2f")
+        st.session_state["adv_magnet_h_mm"] = st.number_input(
+            "Magnet height (mm)", min_value=0.5, max_value=20.0,
+            value=float(st.session_state["adv_magnet_h_mm"]), step=0.1, format="%.2f")
+        st.session_state["adv_air_gap_mm"] = st.number_input(
+            "Air gap (mm)", min_value=0.0, max_value=10.0,
+            value=float(st.session_state["adv_air_gap_mm"]), step=0.05, format="%.2f",
+            help="0 = magnets touching the PCB surface. Practical minimum ≈ 0.2 mm.")
+        st.session_state["adv_remanence_t"] = st.number_input(
+            "Magnet Br (T)", min_value=0.1, max_value=2.0,
+            value=float(st.session_state["adv_remanence_t"]), step=0.01, format="%.3f")
 
     with col_r:
         st.markdown("**Electrical & PCB**")
