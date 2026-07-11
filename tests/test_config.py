@@ -204,9 +204,9 @@ class TestMotorConfigSummary:
 
     def test_summary_contains_key_values(self, default_config):
         s = default_config.summary()
-        assert "75" in s  # travel mm
-        assert "10" in s  # magnet count
-        assert "0.500" in s  # target force
+        assert "75" in s       # travel mm
+        assert "10" in s       # magnet count
+        assert "500" in s      # target force (displayed as 500 mN)
 
     def test_summary_contains_name(self):
         cfg = MotorConfig(
