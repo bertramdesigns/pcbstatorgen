@@ -1,0 +1,66 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pcbstatorgen"
+version = "0.1.0"
+description = "KiCad PCB stator generator for linear coreless motors (flying fader)"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+    # KiCad 10 IPC API — requires a running KiCad instance with API server enabled
+    # (Preferences > Plugins > Enable IPC API)
+    "kicad-python>=0.7.1",
+    # Analytical magnetic field computation — SI units (v5+ breaking change from v4)
+    "magpylib>=5.2.3",
+    # Core scientific stack
+    "numpy>=1.26",
+    "scipy>=1.12",
+    "matplotlib>=3.8",
+    "pyvista>=0.43",
+]
+
+[project.optional-dependencies]
+# Stream function optimization + impedance extraction
+# bfieldtools is archived (last release Jul 2023); pin numpy<2.0 until compatibility
+# is confirmed, then lift the pin.
+optimize = [
+    "bfieldtools>=0.11.3",
+    "cvxpy>=1.4",
+    "trimesh>=4.0",
+    "numpy>=1.26,<2.0",  # bfieldtools not yet validated against numpy 2.x
+]
+# GMSH mesh generation for Elmer FEM export
+fea = [
+    "gmsh>=4.12",
+]
+# Streamlit dashboard GUI
+gui = [
+    "streamlit>=1.35",
+]
+# Development and testing
+dev = [
+    "pytest>=8.0",
+    "pytest-mock>=3.12",
+]
+# Install everything
+all = [
+    "pcbstatorgen[optimize,fea,gui,dev]",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["pcbstatorgen"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v"
+markers = [
+    "integration: requires a live KiCad 10 instance with IPC API server enabled",
+    "slow: computationally expensive tests (bfieldtools / Magpylib sweeps)",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

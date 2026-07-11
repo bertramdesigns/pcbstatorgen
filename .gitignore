@@ -1,0 +1,70 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments
+.venv/
+venv/
+env/
+.env/
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+*.egg
+
+# uv lock file (keep in repo if using uv)
+# uv.lock
+
+# Pytest / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+# Type checkers
+.mypy_cache/
+.pyright/
+
+# Ruff
+.ruff_cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# KiCad generated files (keep .kicad_pcb / .kicad_pro in repo, ignore generated output)
+*.kicad_prl
+*.bak
+*.000
+fp-info-cache
+gerbers/
+fabrication/
+
+# Elmer FEM output
+*.ep
+*.vtu
+*.pvtu
+ELMERSOLVER_STARTINFO
+
+# GMSH output
+*.msh
+
+# Magpylib / bfieldtools intermediate data
+*.npz
+
+# Jupyter notebooks (optional — uncomment if used for exploration)
+# .ipynb_checkpoints/
+# *.ipynb
