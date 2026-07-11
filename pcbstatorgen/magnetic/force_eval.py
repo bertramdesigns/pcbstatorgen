@@ -67,7 +67,7 @@ import numpy as np
 
 import magpylib as magpy
 
-from pcbstatorgen.config import MotorConfig
+from pcbstatorgen.config import MagnetArrangement, MotorConfig
 from pcbstatorgen.geometry.wave_winding import PhaseCoil, WaveWindingGenerator
 from pcbstatorgen.magnetic.coil_model import CoilCurrentModel
 from pcbstatorgen.magnetic.magnet_model import MagnetArray
@@ -353,7 +353,12 @@ class ForceEvaluator:
             return [I_pk] + [0.0] * (n_phases - 1)
 
         # max_torque: sinusoidal FOC
-        # One electrical cycle = 2 * pole_pitch (N→S→N transition)
+        # Electrical period = 2 × pole_pitch for all four MagnetArrangement values.
+        # Our HALBACH implementation inserts X-polarised interleave magnets between
+        # the standard alternating ±Z main magnets; the dominant Bz spatial period
+        # at the PCB surface is still 2τ, not τ.  No period change is needed here.
+        # (If a true 4-magnet equal-width Halbach were used — ↑→↑← with Z+ at both
+        # x=0 and x=τ — the period would be τ and this formula would need updating.)
         theta_e = 2.0 * math.pi * fader_position_m / (2.0 * config.pole_pitch_m)
         phase_offset = 2.0 * math.pi / n_phases  # 120° for 3-phase
         return [
@@ -365,7 +370,11 @@ class ForceEvaluator:
     def electrical_angle(config: MotorConfig, fader_position_m: float) -> float:
         """Electrical angle in radians for a given fader position.
 
-        One full electrical cycle completes over two pole pitches.
+        One full electrical cycle completes over **two pole pitches** for all
+        four :class:`~pcbstatorgen.config.MagnetArrangement` values supported
+        by this codebase.  See the module docstring of
+        :mod:`pcbstatorgen.magnetic.magnet_model` for why the HALBACH
+        arrangement does not require a different period here.
 
         Parameters
         ----------
