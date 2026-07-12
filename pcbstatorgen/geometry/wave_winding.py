@@ -494,3 +494,69 @@ class WaveWindingGenerator:
             phase_name=phase_name,
             topology=CoilTopology.SERPENTINE,
         )
+
+
+class SineWaveWindingGenerator:
+    """Generate sinusoidal serpentine wave winding coil paths.
+
+    The path follows a continuous, smooth sine wave along the travel axis:
+    y(x) = (board_width / 2) * sin(pi * (x - x_offset) / pole_pitch - pi / 2) + (board_width / 2)
+    """
+
+    def generate(self, config: MotorConfig, layer_idx: int = 0) -> list[PhaseCoil]:
+        """Generate sine wave coils for all phases on one layer."""
+        return [
+            self._generate_phase(config, p, layer_idx)
+            for p in range(config.phases)
+        ]
+
+    def _generate_phase(
+        self,
+        config: MotorConfig,
+        phase_idx: int,
+        layer_idx: int,
+    ) -> PhaseCoil:
+        board_width = config.board_width_m
+        pole_pitch = config.pole_pitch_m
+        slot_pitch = config.slot_pitch_m
+        x_offset = phase_idx * slot_pitch
+        x_max = config.active_length_m + (config.phases - 1) * slot_pitch
+
+        segments: list[CoilSegment] = []
+        steps_per_pole = 16
+        dx = pole_pitch / steps_per_pole
+        
+        total_steps = int(math.ceil((x_max - x_offset) / dx))
+        if total_steps < 1:
+            phase_name = PHASE_NAMES[phase_idx % len(PHASE_NAMES)]
+            return PhaseCoil(
+                phase_idx=phase_idx,
+                layer_idx=layer_idx,
+                segments=[],
+                phase_name=phase_name,
+                topology=CoilTopology.SINE_WAVE,
+            )
+
+        xs = [x_offset + i * dx for i in range(total_steps + 1)]
+        points = []
+        for x in xs:
+            y = (board_width / 2.0) * math.sin(
+                math.pi * (x - x_offset) / pole_pitch - math.pi / 2.0
+            ) + (board_width / 2.0)
+            points.append((x, y))
+
+        for i in range(len(points) - 1):
+            segments.append(CoilSegment(
+                start=points[i],
+                end=points[i + 1],
+                is_active=True,
+            ))
+
+        phase_name = PHASE_NAMES[phase_idx % len(PHASE_NAMES)]
+        return PhaseCoil(
+            phase_idx=phase_idx,
+            layer_idx=layer_idx,
+            segments=segments,
+            phase_name=phase_name,
+            topology=CoilTopology.SINE_WAVE,
+        )

@@ -509,6 +509,7 @@ class TestCrossTopology:
         """Each generator must tag its coils with the correct CoilTopology."""
         expected = {
             CoilTopology.SERPENTINE: CoilTopology.SERPENTINE,
+            CoilTopology.SINE_WAVE: CoilTopology.SINE_WAVE,
             CoilTopology.CONCENTRATED: CoilTopology.CONCENTRATED,
             CoilTopology.RHOMBIC: CoilTopology.RHOMBIC,
             CoilTopology.SPIRAL: CoilTopology.SPIRAL,

@@ -99,7 +99,7 @@ class MagnetArray:
     # Public builders
     # ------------------------------------------------------------------
 
-    def build_collection(self, fader_position_m: float = 0.0) -> magpy.Collection:
+    def build_collection(self, mover_position_m: float = 0.0) -> magpy.Collection:
         """Return a Magpylib Collection for the configured arrangement.
 
         Dispatches to the appropriate private builder based on
@@ -107,8 +107,8 @@ class MagnetArray:
 
         Parameters
         ----------
-        fader_position_m:
-            Fader (carriage) position along the travel axis [m].
+        mover_position_m:
+            Mover (carriage) position along the travel axis [m].
 
         Returns
         -------
@@ -116,16 +116,16 @@ class MagnetArray:
         """
         arr = self.config.magnet_arrangement
         if arr == MagnetArrangement.ALTERNATING:
-            magnets = self._build_alternating(fader_position_m)
+            magnets = self._build_alternating(mover_position_m)
         elif arr == MagnetArrangement.HALBACH:
-            magnets = self._build_alternating(fader_position_m)
-            magnets += self._build_halbach_interleave(fader_position_m)
+            magnets = self._build_alternating(mover_position_m)
+            magnets += self._build_halbach_interleave(mover_position_m)
         elif arr == MagnetArrangement.ALTERNATING_BACK_IRON:
-            magnets = self._build_alternating(fader_position_m)
+            magnets = self._build_alternating(mover_position_m)
             magnets += self._build_image_magnets(magnets)
         elif arr == MagnetArrangement.HALBACH_BACK_IRON:
-            main    = self._build_alternating(fader_position_m)
-            interleave = self._build_halbach_interleave(fader_position_m)
+            main    = self._build_alternating(mover_position_m)
+            interleave = self._build_halbach_interleave(mover_position_m)
             magnets = main + interleave
             magnets += self._build_image_magnets(main + interleave)
         else:
@@ -134,12 +134,12 @@ class MagnetArray:
         return magpy.Collection(*magnets)
 
     def build_sweep_collection(self, positions_m: np.ndarray) -> magpy.Collection:
-        """Return a Collection with a fader-position path for vectorised evaluation.
+        """Return a Collection with a mover-position path for vectorised evaluation.
 
         Parameters
         ----------
         positions_m:
-            1-D array of fader positions [m].
+            1-D array of mover positions [m].
 
         Returns
         -------
@@ -151,7 +151,7 @@ class MagnetArray:
             raise ValueError(
                 f"positions_m must be a 1-D array, got shape {positions_m.shape}"
             )
-        coll = self.build_collection(fader_position_m=0.0)
+        coll = self.build_collection(mover_position_m=0.0)
         n = len(positions_m)
         path = np.zeros((n, 3), dtype=float)
         path[:, 0] = positions_m
@@ -162,14 +162,14 @@ class MagnetArray:
     # Private builders
     # ------------------------------------------------------------------
 
-    def _build_alternating(self, fader_position_m: float) -> list:
+    def _build_alternating(self, mover_position_m: float) -> list:
         """Build the base Z-polarised alternating magnet list."""
         cfg = self.config
         z_center = cfg.air_gap_m + cfg.magnet_dims_m[2] / 2.0
         y_center = cfg.board_width_m / 2.0
         magnets = []
         for k in range(cfg.magnet_count):
-            x = fader_position_m + k * cfg.magnet_pitch_m
+            x = mover_position_m + k * cfg.magnet_pitch_m
             pol_z = cfg.magnet_remanence_t * (1.0 if k % 2 == 0 else -1.0)
             magnets.append(magpy.magnet.Cuboid(
                 dimension=cfg.magnet_dims_m,
@@ -178,7 +178,7 @@ class MagnetArray:
             ))
         return magnets
 
-    def _build_halbach_interleave(self, fader_position_m: float) -> list:
+    def _build_halbach_interleave(self, mover_position_m: float) -> list:
         """Build X-polarised interleave cuboids for the Halbach arrangement.
 
         One interleave magnet is placed in the gap between each adjacent
@@ -200,7 +200,7 @@ class MagnetArray:
         magnets = []
         for k in range(cfg.magnet_count - 1):
             # Centre of the gap between main magnet k and k+1
-            x = fader_position_m + k * cfg.magnet_pitch_m + cfg.magnet_pitch_m / 2.0
+            x = mover_position_m + k * cfg.magnet_pitch_m + cfg.magnet_pitch_m / 2.0
             # k=0: Z+→Z− transition → interleave is +X
             # k=1: Z−→Z+ transition → interleave is -X
             pol_x = cfg.magnet_remanence_t * (1.0 if k % 2 == 0 else -1.0)
@@ -251,10 +251,10 @@ class MagnetArray:
         """Z position of main magnet centres above PCB [m]."""
         return self.config.air_gap_m + self.config.magnet_dims_m[2] / 2.0
 
-    def magnet_x_centers_m(self, fader_position_m: float = 0.0) -> np.ndarray:
+    def magnet_x_centers_m(self, mover_position_m: float = 0.0) -> np.ndarray:
         """X positions of all main magnet centres [m], shape ``(magnet_count,)``."""
         k = np.arange(self.config.magnet_count)
-        return fader_position_m + k * self.config.magnet_pitch_m
+        return mover_position_m + k * self.config.magnet_pitch_m
 
     def polarizations_t(self) -> np.ndarray:
         """Z-polarisation of main magnets, shape ``(magnet_count, 3)`` [T]."""
@@ -265,7 +265,7 @@ class MagnetArray:
         )
         return pols
 
-    def interleave_x_centers_m(self, fader_position_m: float = 0.0) -> np.ndarray:
+    def interleave_x_centers_m(self, mover_position_m: float = 0.0) -> np.ndarray:
         """X positions of Halbach interleave magnets [m].
 
         Returns an empty array if the arrangement is not HALBACH or
@@ -276,7 +276,7 @@ class MagnetArray:
             return np.array([])
         cfg = self.config
         k = np.arange(cfg.magnet_count - 1)
-        return fader_position_m + k * cfg.magnet_pitch_m + cfg.magnet_pitch_m / 2.0
+        return mover_position_m + k * cfg.magnet_pitch_m + cfg.magnet_pitch_m / 2.0
 
     def image_z_center_m(self) -> float:
         """Z position of image magnet centres [m] (back-iron arrangements only)."""
@@ -288,7 +288,7 @@ class MagnetArray:
     def bfield_at_pcb_surface(
         self,
         x_sample: np.ndarray,
-        fader_position_m: float = 0.0,
+        mover_position_m: float = 0.0,
         z_observer: float = 0.0,
     ) -> np.ndarray:
         """Sample B along the board centre-line at the PCB surface.
@@ -297,8 +297,8 @@ class MagnetArray:
         ----------
         x_sample:
             X positions [m].
-        fader_position_m:
-            Fader position [m].
+        mover_position_m:
+            Mover position [m].
         z_observer:
             Z of the observation plane [m].  Default 0 = PCB copper surface.
 
@@ -314,5 +314,5 @@ class MagnetArray:
             np.full_like(x_sample, y_center),
             np.full_like(x_sample, z_observer),
         ])
-        coll = self.build_collection(fader_position_m=fader_position_m)
+        coll = self.build_collection(mover_position_m=mover_position_m)
         return magpy.getB(coll, observers)

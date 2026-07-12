@@ -1,27 +1,27 @@
 """
 pcbstatorgen.stackup.friction
 ==============================
-Estimates mechanical friction for a fader assembly and produces a
+Estimates mechanical friction for a mover assembly and produces a
 :class:`~pcbstatorgen.config.FrictionBudget`.
 
 Friction contributors
 ---------------------
-For a motorised PCB-stator fader the main friction sources in descending
+For a motorised PCB-stator mover the main friction sources in descending
 order of impact are:
 
 1. **Bearing/guide friction** — ``µ_bearing × F_normal``.
    ``F_normal`` is the force the bearing rails must support perpendicular to
    the travel axis.  For a coreless PCB stator without ferromagnetic rails the
    magnetic normal force on the carriage is very small (no iron to attract).
-   The dominant source of normal force is gravity (horizontal faders) or
-   contact pre-load (vertical faders).  Pass a measured or estimated value.
+   The dominant source of normal force is gravity (horizontal movers) or
+   contact pre-load (vertical movers).  Pass a measured or estimated value.
 
 2. **Flex-cable (FFC) drag** — empirically ≈ 20 mN per conductor for a
    standard 0.5 mm pitch FFC.  This contribution is significant for
-   faders with many conductors (e.g., Alps / Bourns 26-conductor touch-
-   sensitive faders).
+   movers with many conductors (e.g., Alps / Bourns 26-conductor touch-
+   sensitive movers).
 
-3. **Wiper contact spring** — if the fader uses a resistive pot for
+3. **Wiper contact spring** — if the mover uses a resistive pot for
    position sensing the carbon wiper applies 30–100 mN of spring force
    over the full travel.  Non-contact sensing (magnetic encoder, optical)
    eliminates this term entirely.
@@ -36,7 +36,7 @@ Bearing type reference
 +-----------------------+------+-------------------------------------------------+
 | Type                  | µ    | Notes                                           |
 +=======================+======+=================================================+
-| Plastic channel       | 0.25 | Consumer faders, budget mixers                  |
+| Plastic channel       | 0.25 | Consumer movers, budget mixers                  |
 +-----------------------+------+-------------------------------------------------+
 | PTFE-lined channel    | 0.12 | Standard DAW controllers                        |
 +-----------------------+------+-------------------------------------------------+
@@ -54,7 +54,7 @@ __all__ = ["BearingType", "FrictionEstimator"]
 
 
 class BearingType(Enum):
-    """Fader linear bearing / guide type with associated friction coefficient."""
+    """Mover linear bearing / guide type with associated friction coefficient."""
 
     PLASTIC_CHANNEL = "plastic_channel"
     """Moulded plastic guide channel.  µ ≈ 0.25.
@@ -85,7 +85,7 @@ _WIPER_CONTACT_N: float = 0.055
 
 
 class FrictionEstimator:
-    """Estimate fader mechanical friction and return a :class:`~pcbstatorgen.config.FrictionBudget`.
+    """Estimate mover mechanical friction and return a :class:`~pcbstatorgen.config.FrictionBudget`.
 
     The estimator computes bearing friction from a user-supplied (or zero)
     normal force and empirical models for cable drag and wiper contact.
@@ -102,10 +102,10 @@ class FrictionEstimator:
         Linear bearing / guide type.  See :class:`BearingType`.
     ffc_conductor_count:
         Number of FFC conductors in the flex cable(s) attached to the carriage.
-        A typical touch-sensitive fader uses 26 conductors.  Set to 0 if no
+        A typical touch-sensitive mover uses 26 conductors.  Set to 0 if no
         FFC is used.  Default: 26.
     has_wiper_contact:
-        ``True`` if the fader uses a resistive potentiometer wiper for position
+        ``True`` if the mover uses a resistive potentiometer wiper for position
         sensing.  ``False`` (default) for non-contact sensing (encoder, optical,
         Hall effect).
     normal_force_n:
@@ -118,7 +118,7 @@ class FrictionEstimator:
 
     Examples
     --------
-    Ball-bearing fader with a 26-conductor FFC and magnetic encoder::
+    Ball-bearing mover with a 26-conductor FFC and magnetic encoder::
 
         from pcbstatorgen.stackup.friction import BearingType, FrictionEstimator
 
