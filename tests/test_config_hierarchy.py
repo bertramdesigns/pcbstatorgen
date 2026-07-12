@@ -249,32 +249,31 @@ class TestLinearMotorConfigNewValidation:
         with pytest.raises(ValueError, match="back_iron_thickness_m"):
             LinearMotorConfig(travel_m=mm(75), back_iron_thickness_m=-mm(1))
 
-    def test_assembly_gap_negative_raises(self):
-        """magnet_pitch < magnet_width → magnets overlap → should raise."""
+    def test_assembly_gap_too_small_raises(self):
+        """magnet_pitch - magnet_width must be ≥ 0.3 mm."""
         with pytest.raises(ValueError, match="magnet_pitch_m"):
             LinearMotorConfig(
                 travel_m=mm(75),
-                magnet_dims_m=(mm(13), mm(10), mm(4)),  # width > pitch → overlap
+                magnet_dims_m=(mm(12), mm(10), mm(4)),  # width = pitch → gap = 0
                 magnet_pitch_m=mm(12),
             )
 
-    def test_assembly_gap_zero_allowed(self):
-        """Gap = 0 mm (edge-to-edge) is physically valid and must be accepted."""
+    def test_assembly_gap_exactly_03mm_allowed(self):
         cfg = LinearMotorConfig(
             travel_m=mm(75),
-            magnet_dims_m=(mm(12), mm(10), mm(4)),
-            magnet_pitch_m=mm(12),   # width == pitch → gap = 0
+            magnet_dims_m=(mm(9.7), mm(10), mm(4)),
+            magnet_pitch_m=mm(10),  # gap = 10 - 9.7 = 0.3 mm ✓
         )
-        assert cfg.magnet_pitch_m - cfg.magnet_dims_m[0] == pytest.approx(0.0, abs=1e-9)
+        assert cfg.magnet_pitch_m - cfg.magnet_dims_m[0] == pytest.approx(mm(0.3), abs=1e-9)
 
-    def test_small_positive_gap_allowed(self):
-        """Any gap ≥ 0 should be accepted, including sub-mm values."""
-        cfg = LinearMotorConfig(
-            travel_m=mm(75),
-            magnet_dims_m=(mm(11.9), mm(10), mm(4)),
-            magnet_pitch_m=mm(12),   # gap = 0.1 mm
-        )
-        assert cfg.magnet_pitch_m - cfg.magnet_dims_m[0] == pytest.approx(mm(0.1), abs=1e-9)
+    def test_assembly_gap_just_under_raises(self):
+        """9.71 mm magnet + 10 mm pitch = 0.29 mm gap < 0.3 mm minimum."""
+        with pytest.raises(ValueError, match="magnet_pitch_m"):
+            LinearMotorConfig(
+                travel_m=mm(75),
+                magnet_dims_m=(mm(9.71), mm(10), mm(4)),
+                magnet_pitch_m=mm(10),
+            )
 
     def test_zero_travel_raises(self):
         with pytest.raises(ValueError, match="travel_m"):
