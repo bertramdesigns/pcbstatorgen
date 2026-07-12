@@ -57,7 +57,7 @@ _DEFAULT_TOLERANCE_M: float = 3e-4  # 0.3 mm
 
 
 class HeightStackCalculator:
-    """Compute the physical height stack for a linear fader assembly.
+    """Compute the physical height stack for a linear mover assembly.
 
     Parameters
     ----------

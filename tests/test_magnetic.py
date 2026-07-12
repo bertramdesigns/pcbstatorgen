@@ -83,9 +83,9 @@ class TestMagnetArrayGeometry:
         arr = MagnetArray(small_config)
         assert arr.magnet_z_center_m() > 0.0
 
-    def test_first_magnet_x_at_fader_zero(self, small_config):
+    def test_first_magnet_x_at_mover_zero(self, small_config):
         arr = MagnetArray(small_config)
-        xs = arr.magnet_x_centers_m(fader_position_m=0.0)
+        xs = arr.magnet_x_centers_m(mover_position_m=0.0)
         assert xs[0] == pytest.approx(0.0)
 
     def test_magnet_spacing_equals_pitch(self, small_config):
@@ -94,11 +94,11 @@ class TestMagnetArrayGeometry:
         diffs = np.diff(xs)
         assert np.allclose(diffs, small_config.magnet_pitch_m)
 
-    def test_fader_position_shifts_all_magnets(self, small_config):
+    def test_mover_position_shifts_all_magnets(self, small_config):
         arr = MagnetArray(small_config)
         shift = mm(30)
-        xs_0 = arr.magnet_x_centers_m(fader_position_m=0.0)
-        xs_s = arr.magnet_x_centers_m(fader_position_m=shift)
+        xs_0 = arr.magnet_x_centers_m(mover_position_m=0.0)
+        xs_s = arr.magnet_x_centers_m(mover_position_m=shift)
         assert np.allclose(xs_s - xs_0, shift)
 
     def test_polarizations_alternate_sign(self, small_config):
@@ -135,7 +135,7 @@ class TestMagnetArrayGeometry:
 
     def test_collection_at_nonzero_position(self, small_config):
         arr = MagnetArray(small_config)
-        coll = arr.build_collection(fader_position_m=mm(30))
+        coll = arr.build_collection(mover_position_m=mm(30))
         # First child should be at x ≈ 30mm (plus the child's own offset)
         first_pos = coll.sources_all[0].position
         assert first_pos[0] == pytest.approx(mm(30), abs=1e-9)
@@ -173,11 +173,11 @@ class TestMagnetArrayBField:
         assert np.any(bz > 0.05) and np.any(bz < -0.05)
 
     @pytest.mark.slow
-    def test_bfield_changes_with_fader_position(self, small_config):
+    def test_bfield_changes_with_mover_position(self, small_config):
         arr = MagnetArray(small_config)
         xs = np.array([0.0, mm(12), mm(24)])
-        B0 = arr.bfield_at_pcb_surface(xs, fader_position_m=0.0)
-        B1 = arr.bfield_at_pcb_surface(xs, fader_position_m=mm(6))
+        B0 = arr.bfield_at_pcb_surface(xs, mover_position_m=0.0)
+        B1 = arr.bfield_at_pcb_surface(xs, mover_position_m=mm(6))
         assert not np.allclose(B0, B1)
 
 
@@ -280,7 +280,7 @@ class TestCoilCurrentModelBField:
     def test_bfield_at_conductor_positions_shape(self, small_config, gen):
         coils = gen.generate(small_config)
         arr = MagnetArray(small_config)
-        coll = arr.build_collection(fader_position_m=0.0)
+        coll = arr.build_collection(mover_position_m=0.0)
         model = CoilCurrentModel()
         B = model.bfield_at_conductor_positions(coils[0], coll)
         assert B.shape == (coils[0].active_conductor_count, 3)
@@ -289,7 +289,7 @@ class TestCoilCurrentModelBField:
     def test_bfield_nonzero_at_conductors(self, small_config, gen):
         coils = gen.generate(small_config)
         arr = MagnetArray(small_config)
-        coll = arr.build_collection(fader_position_m=0.0)
+        coll = arr.build_collection(mover_position_m=0.0)
         model = CoilCurrentModel()
         B = model.bfield_at_conductor_positions(coils[0], coll)
         # The magnets are directly above — expect substantial Bz
@@ -435,7 +435,7 @@ class TestForceEvaluatorSlow:
     def test_evaluate_at_single_position(self, tiny_config, gen):
         coils = gen.generate(tiny_config)
         ev = ForceEvaluator(n_positions=5, meshing=5)
-        F, T = ev.evaluate_at(tiny_config, coils, fader_position_m=mm(12))
+        F, T = ev.evaluate_at(tiny_config, coils, mover_position_m=mm(12))
         assert F.shape == (3,)
         assert T.shape == (3,)
 
@@ -444,7 +444,7 @@ class TestForceEvaluatorSlow:
         """For phase_a_only at position 0, thrust should be in +X (positive)."""
         coils = gen.generate(tiny_config)
         ev = ForceEvaluator(n_positions=5, meshing=10, commutation="phase_a_only")
-        F, _ = ev.evaluate_at(tiny_config, coils, fader_position_m=0.0)
+        F, _ = ev.evaluate_at(tiny_config, coils, mover_position_m=0.0)
         # With alternating poles and a wave winding, net X force should be non-zero.
         # The sign depends on magnet/coil alignment — just check it's nonzero.
         assert abs(F[0]) > 1e-6  # at least 1 µN

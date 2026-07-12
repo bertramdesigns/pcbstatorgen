@@ -173,8 +173,10 @@ class KiCadConnection:
         str
             Version string as reported by KiCad (e.g. ``"10.0.1"``).
         """
-        version_str = self._kicad.get_version()
-        parts = tuple(int(x) for x in version_str.split(".")[:3])
+        # Handle both string and protobuf object returns from get_version()
+        v = self._kicad.get_version()
+        version_str = getattr(v, "kicad_version", str(v)).split()[0]  # get "10.0.3" from "10.0.3 (10.0.3)"
+        parts = tuple(int(x) for x in version_str.split(".")[:3] if x.isdigit())
         if parts < min_version:
             min_str = ".".join(str(x) for x in min_version)
             raise RuntimeError(

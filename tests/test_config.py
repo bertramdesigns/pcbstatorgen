@@ -25,13 +25,13 @@ class TestMotorConfigConstruction:
 
     def test_name_stored(self):
         cfg = MotorConfig(
-            name="my-fader",
+            name="my-actuator",
             travel_m=mm(75),
             magnet_dims_m=(mm(10), mm(10), mm(4)),
             magnet_count=10,
             magnet_pitch_m=mm(12),
         )
-        assert cfg.name == "my-fader"
+        assert cfg.name == "my-actuator"
 
     def test_name_optional(self):
         cfg = MotorConfig(

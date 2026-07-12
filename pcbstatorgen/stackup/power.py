@@ -26,9 +26,9 @@ The power model proceeds in three steps:
 
 Efficiency note
 ---------------
-The mechanical efficiency of a short-stroke coreless PCB fader at rated
+The mechanical efficiency of a short-stroke coreless PCB mover at rated
 continuous current is typically 1–5 %.  Most electrical energy is dissipated
-as heat even at full speed because the fader spends most of its time in
+as heat even at full speed because the mover spends most of its time in
 position-hold (zero velocity → zero mechanical output).
 """
 
@@ -55,7 +55,7 @@ _V_RATED_M_S: float = 0.10
 
 
 class PowerEstimator:
-    """Estimate drive-circuit power budget for a fader stator design.
+    """Estimate drive-circuit power budget for a mover stator design.
 
     The estimator can work with or without a :class:`~pcbstatorgen.config.StackupResult`:
 

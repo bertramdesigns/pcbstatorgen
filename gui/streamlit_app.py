@@ -4,17 +4,9 @@ gui/streamlit_app.py — PCB Stator Generator Dashboard
 Run with:
     streamlit run gui/streamlit_app.py
 
-The UI has two modes selectable from the sidebar:
-
-  🧙 Wizard   — 6-step goal-first flow.  Start here if you're not a motor
-                expert.  Answer plain-English questions about what you want
-                the motor to DO; the tool derives the technical parameters.
-
-  ⚙️  Advanced — All parameters exposed as direct controls.  For power users
-                who know motor theory and want to tweak specific values.
-
-Both modes build the same LinearMotorConfig, which drives the output tabs
-(Coil Geometry, Magnet Field, Force Preview, Write to KiCad).
+A unified, high-fidelity Advanced Dashboard for designing and validating
+PCB stator motors. Fully generalized from specific applications (such as faders)
+to any linear actuator or radial (rotary) axial-flux motor.
 """
 
 from __future__ import annotations
@@ -35,11 +27,12 @@ import matplotlib.pyplot as plt
 from pcbstatorgen.config import (
     CoilTopology,
     LinearMotorConfig,
+    AxialMotorConfig,
     MagnetArrangement,
     StackupResult,
 )
 from pcbstatorgen.stackup.friction import BearingType, FrictionEstimator
-from pcbstatorgen.stackup.height_stack import HeightStackCalculator
+from pcbstatorgen.stackup.height_stack import HeightStackCalculator, HeightStackResult
 from pcbstatorgen.stackup.power import PowerEstimator
 from pcbstatorgen.units import mm, mils_to_m, oz_to_m, m_to_mm, skin_depth_m
 
@@ -55,25 +48,29 @@ st.set_page_config(
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Constants
+# Constants & Lookups
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Pre-filled defaults for each common fader application type
-_FADER_PRESETS = {
-    "Studio 100 mm": dict(travel_mm=100.0, mass_g=18, board_width_mm=22, ffc=26),
-    "Studio 75 mm":  dict(travel_mm=75.0,  mass_g=15, board_width_mm=20, ffc=26),
-    "Live sound 60 mm": dict(travel_mm=60.0, mass_g=12, board_width_mm=18, ffc=20),
-    "Custom":         dict(travel_mm=75.0,  mass_g=15, board_width_mm=20, ffc=26),
+# Rough fabrication cost for 5 boards at JLCPCB standard per layer count
+_COST_USD = {4: 12, 6: 22, 8: 38, 10: 60, 12: 85}
+
+# Magnet Grade Br Lookup Table
+_MAGNET_BR_LOOKUP = {
+    "N35 (Standard)": 1.19,
+    "N38 (Medium)": 1.23,
+    "N42 (Strong)": 1.30,
+    "N44H (High-Temp Standard)": 1.34,
+    "N48 (Ultra-Strong)": 1.40,
+    "N52 (Premium / Maximum)": 1.45,
+    "Custom (Manual Input)": None
 }
 
-# Feel overhead (extra continuous force for haptic quality) in Newtons
-_FEEL_FORCE_N = {"Light": 0.040, "Medium": 0.120, "Heavy": 0.280, "Active spring": 0.480}
-
-# Peak acceleration for burst moves, in m/s²
-_SPEED_ACCEL = {"Slow (0.05 m/s)": 0.5, "Normal (0.10 m/s)": 2.0, "Fast (0.20 m/s)": 5.0}
-
-# Rough cost for 5 boards at JLCPCB standard per layer count
-_COST_USD = {4: 12, 6: 22, 8: 38, 10: 60, 12: 85}
+# Winding Spacing Ratio Lookup Table
+_SPACING_RATIO_LOOKUP = {
+    "1:1 Standard (Maximum Fundamental Force)": 1.0,
+    "Vernier 4:5 (Suppresses 5th Winding Harmonic, Low Ripple)": 0.8,
+    "Vernier 5:6 (Suppresses 6th Winding Harmonic, Low Ripple)": 0.8333,
+}
 
 # Arrangement force multipliers vs ALTERNATING baseline
 _ARR_MULT = {
@@ -86,30 +83,25 @@ _ARR_MULT = {
 # Topology force multipliers vs SERPENTINE baseline
 _TOPO_MULT = {
     CoilTopology.SERPENTINE: 1.00,
-    CoilTopology.CONCENTRATED: 0.95,
-    CoilTopology.RHOMBIC: 0.87,
-    CoilTopology.SPIRAL: 0.60,
+    CoilTopology.SINE_WAVE: 0.78,
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Session state initialisation
 # ─────────────────────────────────────────────────────────────────────────────
 
-_WIZ_DEFAULTS: dict = {
-    "ui_mode": "wizard",
-    "wizard_step": 0,
-    # Step 0
-    "fader_preset": "Studio 75 mm",
-    "bearing_label": "PTFE-lined",
-    # Step 1
-    "height_budget_mm": 8.0,
-    "supply_v": 5.0,
-    "max_current_a": 1.0,
-    # Step 2
+_DEFAULTS = {
+    "motor_class": "Linear",
     "coil_topology": CoilTopology.SERPENTINE,
-    # Step 3
     "magnet_arrangement": MagnetArrangement.ALTERNATING,
-    "back_iron_mm": 0.0,
+    "magnet_grade": "N44H (High-Temp Standard)",
+    "remanence_t": 1.34,
+    "max_current_a": 1.0,
+    "supply_v": 5.0,
+    "layers": 6,
+    "phases": 3,
+    "min_trace_mil": 5.0,
+    "min_space_mil": 5.0,
     "magnet_width_mm": 10.0,
     # Step 4
     "desired_feel": "Medium",
@@ -132,7 +124,7 @@ _WIZ_DEFAULTS: dict = {
     "adv_air_gap_mm": 0.5,
 }
 
-for k, v in _WIZ_DEFAULTS.items():
+for k, v in _DEFAULTS.items():
     if k not in st.session_state:
         st.session_state[k] = v
 
@@ -151,16 +143,8 @@ def badge(value: float, good: float, warn: float, higher_is_better: bool = True)
         return "🟢" if value <= good else ("🟡" if value <= warn else "🔴")
 
 
-def _bearing_type_from_label(label: str) -> BearingType:
-    return {
-        "Plastic channel": BearingType.PLASTIC_CHANNEL,
-        "PTFE-lined":      BearingType.PTFE_LINED,
-        "Ball bearing":    BearingType.BALL_BEARING,
-    }.get(label, BearingType.PTFE_LINED)
-
-
-def _estimate_force_n(config: LinearMotorConfig, n_layers: int) -> float:
-    """Quick analytical force estimate — good enough for the wizard comparison table."""
+def _estimate_force_n(config: LinearMotorConfig | AxialMotorConfig, n_layers: int) -> float:
+    """Quick analytical force estimate — good enough for the live dashboard metrics."""
     try:
         hz = HeightStackCalculator()
         bz_peak = hz.field_at_gap(config, config.air_gap_m)
@@ -256,34 +240,97 @@ def build_config_from_advanced() -> LinearMotorConfig | None:
     """Build config from the Advanced mode sliders in session state."""
     try:
         s = st.session_state
-        return LinearMotorConfig(
-            travel_m=mm(s["adv_travel_mm"]),
-            magnet_dims_m=(mm(s["magnet_width_mm"]),
-                           mm(s["adv_magnet_l_mm"]),
-                           mm(s["adv_magnet_h_mm"])),
-            magnet_count=10,
-            magnet_pitch_m=mm(s["adv_magnet_pitch_mm"]),
-            magnet_remanence_t=s["adv_remanence_t"],
-            magnet_arrangement=s["magnet_arrangement"],
-            back_iron_thickness_m=mm(s["back_iron_mm"]),
-            coil_topology=s["coil_topology"],
-            phases=s["adv_phases"],
-            target_force_n=s["adv_target_n"],
-            peak_force_n=max(s["adv_target_n"], s["adv_target_n"] * 2),
-            max_current_a=s["max_current_a"],
-            supply_voltage_v=s["supply_v"],
-            min_trace_m=mils_to_m(s["adv_min_trace_mil"]),
-            min_space_m=mils_to_m(s["adv_min_space_mil"]),
-            min_via_drill_m=mm(0.2),
-            min_via_annular_ring_m=mm(0.1),
-            board_width_m=mm(s["adv_board_width_mm"]),
-            air_gap_m=mm(s["adv_air_gap_mm"]),
-            max_layers=s["adv_max_layers"],
-        )
+        arrangement = s["magnet_arrangement"]
+        back_iron_m = mm(s["back_iron_mm"])
+        mw = mm(s["magnet_width_mm"])
+        gap_m = mm(s["magnet_gap_mm"])
+        pole_pitch_m = mw + gap_m
+        height_m = mm(s["magnet_height_mm"])
+        length_m = mm(s["magnet_length_mm"])
+        air_gap_m = mm(s["air_gap_mm"])
+        remanence = s["remanence_t"]
+        coil_topo = s["coil_topology"]
+        n_layers = s["layers"]
+        phases = s["phases"]
+        min_trace = mils_to_m(s["min_trace_mil"])
+        min_space = mils_to_m(s["min_space_mil"])
+        max_i = s["max_current_a"]
+        supply_v = s["supply_v"]
+        ratio = _SPACING_RATIO_LOOKUP.get(s["spacing_ratio_label"], 1.0)
+
+        if s["motor_class"] == "Radial":
+            od_m = mm(s["stator_OD_mm"])
+            id_m = mm(s["stator_ID_mm"])
+            speed = s["rated_speed_rpm"]
+            target_t_nm = s["target_torque_m_nm"] / 1000.0
+            peak_t_nm = target_t_nm * 2.0
+            inertia = s["rotor_inertia_gcm2"] * 1e-7  # g·cm² to kg·m²
+            
+            return AxialMotorConfig(
+                name=f"axial-{s['stator_OD_mm']:.0f}mm",
+                stator_OD_m=od_m,
+                stator_ID_m=id_m,
+                rated_speed_rpm=speed,
+                target_torque_nm=target_t_nm,
+                peak_torque_nm=peak_t_nm,
+                rotor_inertia_kgm2=inertia,
+                magnet_dims_m=(mw, length_m, height_m),
+                magnet_count=10,
+                magnet_pitch_m=pole_pitch_m,
+                magnet_remanence_t=remanence,
+                magnet_arrangement=arrangement,
+                back_iron_thickness_m=back_iron_m,
+                coil_topology=coil_topo,
+                phases=phases,
+                spacing_ratio=ratio,
+                max_current_a=max_i,
+                supply_voltage_v=supply_v,
+                min_trace_m=min_trace,
+                min_space_m=min_space,
+                min_via_drill_m=mm(0.2),
+                min_via_annular_ring_m=mm(0.1),
+                air_gap_m=air_gap_m,
+                max_layers=n_layers,
+            )
+        else:
+            travel_m = mm(s["travel_mm"])
+            board_width_m = mm(s["board_width_mm"])
+            mass_kg = s["mass_g"] / 1000.0
+            friction_n = s["friction_mn"] / 1000.0
+            target_n = s["target_force_n"]
+            peak_n = target_n * 2.0
+
+            return LinearMotorConfig(
+                name=f"linear-{s['travel_mm']:.0f}mm",
+                travel_m=travel_m,
+                magnet_dims_m=(mw, length_m, height_m),
+                magnet_count=10,
+                magnet_pitch_m=pole_pitch_m,
+                magnet_remanence_t=remanence,
+                magnet_arrangement=arrangement,
+                back_iron_thickness_m=back_iron_m,
+                coil_topology=coil_topo,
+                phases=phases,
+                spacing_ratio=ratio,
+                target_force_n=target_n,
+                peak_force_n=peak_n,
+                friction_n=friction_n,
+                carriage_mass_kg=mass_kg,
+                max_current_a=max_i,
+                supply_voltage_v=supply_v,
+                min_trace_m=min_trace,
+                min_space_m=min_space,
+                min_via_drill_m=mm(0.2),
+                min_via_annular_ring_m=mm(0.1),
+                board_width_m=board_width_m,
+                air_gap_m=air_gap_m,
+                max_layers=n_layers,
+                pcb_thickness_m=0.0016,
+                capacitor_bank_uf=1000.0,
+            )
     except Exception as exc:
         st.error(f"Configuration error: {exc}")
         return None
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Sidebar
@@ -291,46 +338,56 @@ def build_config_from_advanced() -> LinearMotorConfig | None:
 
 with st.sidebar:
     st.title("⚡ pcbstatorgen")
-    st.caption("PCB stator generator for linear coreless motors")
+    st.caption("Multiphysics PCB Stator Motor Generator")
     st.divider()
 
-    mode = st.radio(
-        "Mode",
-        ["🧙 Wizard", "⚙️ Advanced"],
-        index=0 if st.session_state["ui_mode"] == "wizard" else 1,
-        help="Wizard: answer goal-focused questions. Advanced: direct parameter control.",
+    motor_class_selection = st.radio(
+        "Motor Class",
+        ["Linear Motor", "Radial (Rotary) Motor"],
+        index=0 if st.session_state["motor_class"] == "Linear" else 1,
+        help="Linear Motor: Straight stroke actuator.\nRadial Motor: Rotating disk / shaft motor."
     )
-    st.session_state["ui_mode"] = "wizard" if "Wizard" in mode else "advanced"
+    st.session_state["motor_class"] = "Linear" if "Linear" in motor_class_selection else "Radial"
     st.divider()
-    st.caption(
-        "Wizard: start here if you're new to motor design. "
-        "Advanced: full control for experienced users."
+
+    # Coil Topology Selectable (Serpentine vs Sine Wave Serpentine only)
+    topo_labels = {
+        CoilTopology.SERPENTINE: "🌊 Square Serpentine",
+        CoilTopology.SINE_WAVE: "🌊 Sine Wave Serpentine"
+    }
+    topo_choice = st.selectbox(
+        "Coil Topology",
+        list(topo_labels.values()),
+        index=0 if st.session_state["coil_topology"] not in topo_labels else list(topo_labels.keys()).index(st.session_state["coil_topology"]),
+        help="Select the trace winding shape of the stator."
     )
+    st.session_state["coil_topology"] = [
+        k for k, v in topo_labels.items() if v == topo_choice
+    ][0]
+
+    # Spacing Ratio (Vernier) selectbox
+    ratio_choice = st.selectbox(
+        "Winding Spacing Ratio",
+        list(_SPACING_RATIO_LOOKUP.keys()),
+        index=list(_SPACING_RATIO_LOOKUP.keys()).index(st.session_state["spacing_ratio_label"]),
+        help="Vernier misaligns the coils to poles by a fractional ratio to cancel spatial force harmonics and flatten ripple, at the cost of a slightly lower fundamental force."
+    )
+    st.session_state["spacing_ratio_label"] = ratio_choice
+
+    st.divider()
+    st.caption("ℹ️ *Designed for local-first drafting directly to KiCad 10 over the kipy IPC API. Offline physics verification powered by Magpylib.*")
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Wizard renderer
+# Main Dashboard Layout
 # ─────────────────────────────────────────────────────────────────────────────
 
-_STEP_TITLES = [
-    "1 / 6 — Application Profile",
-    "2 / 6 — Physical Envelope",
-    "3 / 6 — Coil Topology",
-    "4 / 6 — Magnet Arrangement",
-    "5 / 6 — Force and Feel",
-    "6 / 6 — PCB Tier & Layer Count",
-]
-_N_STEPS = len(_STEP_TITLES)
+st.title(f"🛠️ Unified {st.session_state['motor_class']} Dashboard")
+st.divider()
 
+# Build and store configuration
+config = build_config()
 
-def _nav_buttons(step: int) -> int:
-    """Render Back / Next buttons; return the new step index."""
-    col_b, col_spacer, col_n = st.columns([1, 4, 1])
-    if step > 0 and col_b.button("← Back", use_container_width=True):
-        return step - 1
-    if step < _N_STEPS - 1 and col_n.button("Next →", type="primary", use_container_width=True):
-        return step + 1
-    return step
-
+col_params, col_feedback = st.columns([1, 1])
 
 def render_wizard() -> LinearMotorConfig | None:
     step = st.session_state["wizard_step"]
@@ -379,86 +436,40 @@ def _step0_application() -> None:
             list(_FADER_PRESETS.keys()),
             index=list(_FADER_PRESETS.keys()).index(st.session_state["fader_preset"]),
         )
-        st.session_state["fader_preset"] = preset_label
-        preset = _FADER_PRESETS[preset_label]
-
-        st.metric("Travel", f"{preset['travel_mm']:.0f} mm")
-        st.metric("Carriage mass (est.)", f"{preset['mass_g']} g")
-        st.metric("FFC conductors", f"{preset['ffc']}")
-
-    with col2:
-        bearing_label = st.radio(
-            "Guide rail / bearing type",
-            ["Plastic channel", "PTFE-lined", "Ball bearing"],
-            index=["Plastic channel", "PTFE-lined", "Ball bearing"].index(
-                st.session_state["bearing_label"]
-            ),
+        st.session_state["rated_speed_rpm"] = st.number_input(
+            "Target Rated Speed (RPM)", min_value=1.0, max_value=25000.0,
+            value=float(st.session_state["rated_speed_rpm"]), step=50.0, format="%.1f",
+            help="Continuous rated operating speed of the rotary motor."
         )
-        st.session_state["bearing_label"] = bearing_label
-
-        bearing_type = _bearing_type_from_label(bearing_label)
-        mu = {"Plastic channel": 0.25, "PTFE-lined": 0.12, "Ball bearing": 0.003}[bearing_label]
-        eli5({
-            "Plastic channel": "Budget guide channels. More friction but cheap and common.",
-            "PTFE-lined": "PTFE-coated channels. Good balance — standard for DAW controllers.",
-            "Ball bearing": "Precision steel ball bearing. Very low friction. Used in top-tier consoles.",
-        }[bearing_label])
-        st.metric("Friction coefficient µ", f"{mu}")
-
-    # Live friction preview
-    est = FrictionEstimator(
-        bearing_type=bearing_type,
-        ffc_conductor_count=preset["ffc"],
-        has_wiper_contact=False,
-    )
-    fb = est.estimate()
-    st.divider()
-    st.caption("**Estimated friction from this configuration:**")
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Bearing friction", f"{fb.bearing_friction_n*1e3:.0f} mN",
-              help="µ × magnetic normal force (≈0 for coreless without back-iron)")
-    c2.metric("Cable drag", f"{fb.cable_drag_n*1e3:.0f} mN",
-              help=f"~20 mN/conductor × {preset['ffc']} conductors")
-    c3.metric("Total friction", f"{fb.total_n*1e3:.0f} mN")
-    c4.metric("Min. drive force", f"{fb.minimum_drive_force_n*1e3:.0f} mN",
-              help="Total × 1.3 safety margin — the motor must exceed this just to start moving")
-
-
-def _step1_envelope() -> None:
-    st.subheader("How much space do you have?")
-    eli5(
-        "These are the hard physical limits for your design — you can't trade "
-        "them against each other. Set them from your product housing dimensions."
-    )
-
-    col1, col2 = st.columns(2)
-    with col1:
-        height = st.slider(
-            "Total height budget — PCB + magnets + everything (mm)",
-            min_value=5.0, max_value=20.0,
-            value=st.session_state["height_budget_mm"], step=0.5,
+        st.session_state["rotor_inertia_gcm2"] = st.number_input(
+            "Rotor Inertia (g·cm²)", min_value=0.1, max_value=10000.0,
+            value=float(st.session_state["rotor_inertia_gcm2"]), step=5.0, format="%.1f",
+            help="Total rotational inertia of the rotor assembly."
         )
-        st.session_state["height_budget_mm"] = height
-        eli5(
-            "Measure inside your product housing from the PCB mounting surface "
-            "to the highest point of the magnet assembly."
+        
+        # Display derived properties
+        if config:
+            st.caption(
+                f"**Radial Properties:**  \n"
+                f"• Active Area Width (radial span): **{config.board_width_m*1000:.1f} mm**  \n"
+                f"• Mean Stator Radius: **{config.mean_radius_m*1000:.1f} mm**  \n"
+                f"• Equivalent Active Zone Length: **{config.active_length_m*1000:.1f} mm**"
+            )
+    else:
+        st.session_state["travel_mm"] = st.number_input(
+            "Center-to-Center Travel (mm)", min_value=10.0, max_value=500.0,
+            value=float(st.session_state["travel_mm"]), step=5.0, format="%.1f",
+            help="The physical center-to-center stroke of the mover reference center."
         )
-
-        supply_v = st.selectbox(
-            "Power supply voltage",
-            [3.3, 5.0, 9.0, 12.0],
-            index=[3.3, 5.0, 9.0, 12.0].index(st.session_state["supply_v"])
-            if st.session_state["supply_v"] in [3.3, 5.0, 9.0, 12.0] else 1,
-            format_func=lambda v: f"{v:.1f} V",
+        st.session_state["board_width_mm"] = st.number_input(
+            "Active Area Width (mm)", min_value=1.0, max_value=100.0,
+            value=float(st.session_state["board_width_mm"]), step=1.0, format="%.1f",
+            help="Width of the copper traces perpendicular to travel."
         )
-        st.session_state["supply_v"] = float(supply_v)
-
-        max_i = st.selectbox(
-            "Maximum continuous current per phase",
-            [0.5, 1.0, 1.5, 2.0],
-            index=[0.5, 1.0, 1.5, 2.0].index(st.session_state["max_current_a"])
-            if st.session_state["max_current_a"] in [0.5, 1.0, 1.5, 2.0] else 1,
-            format_func=lambda a: f"{a:.1f} A",
+        st.session_state["mass_g"] = st.number_input(
+            "Mover Carriage Mass (g)", min_value=1.0, max_value=2000.0,
+            value=float(st.session_state["mass_g"]), step=1.0, format="%.1f",
+            help="Total mass of the moving carriage assembly."
         )
         st.session_state["max_current_a"] = float(max_i)
         eli5("Set by your gate driver IC's current rating, not by what you think you need. Check the datasheet.")
@@ -552,28 +563,15 @@ def _step2_coil_topology() -> None:
                 </div>""",
                 unsafe_allow_html=True,
             )
-            if st.button(
-                "✓ Select" if is_selected else "Select",
-                key=f"topo_{topo.value}",
-                type="primary" if is_selected else "secondary",
-                use_container_width=True,
-            ):
-                st.session_state["coil_topology"] = topo
-                st.rerun()
 
-    if selected_topo == CoilTopology.SPIRAL:
-        st.info(
-            "ℹ️ Spiral coils require **layer pairs** (the trace spirals inward on Layer N, "
-            "transitions via a centre via, then spirals out on Layer N+1). "
-            "Full production support is coming with the axial motor phase."
-        )
-
-
-def _step3_magnet_arrangement() -> None:
-    st.subheader("How should the magnets be arranged?")
-    eli5(
-        "The arrangement determines how much magnetic field reaches the PCB coil. "
-        "More field = more force. But some options add height or cost."
+    st.divider()
+    st.markdown("**Magnet Array Geometry**")
+    
+    # Gap instead of Pitch, and direct Magnet Width
+    st.session_state["magnet_width_mm"] = st.number_input(
+        "Magnet Width along Travel Axis (mm)", min_value=1.0, max_value=50.0,
+        value=float(st.session_state["magnet_width_mm"]), step=0.1, format="%.2f",
+        help="Physical width of a single magnet block."
     )
 
     arrangements = [
@@ -645,197 +643,27 @@ def _step4_force_and_feel() -> None:
         "You're defining the USER EXPERIENCE here, not the motor specs. "
         "The tool converts your answers to the minimum force the motor must produce."
     )
-
-    col1, col2 = st.columns(2)
-    with col1:
-        feel = st.radio(
-            "Tactile resistance under the operator's hand",
-            list(_FEEL_FORCE_N.keys()),
-            index=list(_FEEL_FORCE_N.keys()).index(st.session_state["desired_feel"]),
-        )
-        st.session_state["desired_feel"] = feel
-        eli5({
-            "Light":  "Moves with almost no resistance. Like sliding on glass.",
-            "Medium": "Gentle push. Standard for DAW controllers and broadcast desks.",
-            "Heavy":  "Deliberate resistance. Professional studio console feel.",
-            "Active spring": "The motor actively resists with a configurable spring effect. Used in haptic faders.",
-        }[feel])
-
-    with col2:
-        speed = st.radio(
-            "How fast should automation move the fader?",
-            list(_SPEED_ACCEL.keys()),
-            index=list(_SPEED_ACCEL.keys()).index(st.session_state["automation_speed"]),
-        )
-        st.session_state["automation_speed"] = speed
-        eli5({
-            "Slow (0.05 m/s)":   "Slow fades for gentle automation. Enough for most mixing tasks.",
-            "Normal (0.10 m/s)": "Standard speed. Comfortable for live show recall.",
-            "Fast (0.20 m/s)":   "Fast snap-to-position. Used in rapid cue switching.",
-        }[speed])
-
-    # Live friction breakdown
-    st.divider()
-    preset  = _FADER_PRESETS.get(st.session_state["fader_preset"],
-                                  _FADER_PRESETS["Studio 75 mm"])
-    bearing = _bearing_type_from_label(st.session_state["bearing_label"])
-    est     = FrictionEstimator(bearing_type=bearing,
-                                ffc_conductor_count=preset["ffc"],
-                                has_wiper_contact=False)
-    fb      = est.estimate()
-    feel_n  = _FEEL_FORCE_N.get(feel, 0.12)
-    mass_kg = preset["mass_g"] / 1000.0
-    accel_n = mass_kg * _SPEED_ACCEL.get(speed, 2.0)
-    min_drive = fb.total_n * 1.3
-    target_n  = min_drive + feel_n
-    peak_n    = max(target_n, fb.total_n + accel_n + feel_n) * 1.25
-
-    st.markdown("**Force budget breakdown:**")
-    cols = st.columns(5)
-    cols[0].metric("Bearing friction",  f"{fb.bearing_friction_n*1e3:.0f} mN")
-    cols[1].metric("Cable drag",        f"{fb.cable_drag_n*1e3:.0f} mN")
-    cols[2].metric("Feel overhead",     f"{feel_n*1e3:.0f} mN")
-    cols[3].metric("Accel. budget",     f"{accel_n*1e3:.0f} mN",
-                   help=f"{mass_kg*1e3:.0f} g × {_SPEED_ACCEL.get(speed,2.0):.1f} m/s²")
-    icon = badge(target_n, 0.05, 0.02, higher_is_better=True)
-    cols[4].metric(f"Continuous target {icon}", f"{target_n*1e3:.0f} mN",
-                   help="The motor must produce at least this much force at all times")
-    st.caption(f"Peak burst target: **{peak_n*1e3:.0f} mN** (fast automation)")
-
-
-def _step5_pcb_tier() -> None:
-    st.subheader("Choose your PCB manufacturer and layer count.")
-    eli5(
-        "More layers = more force, but higher cost. "
-        "The tool estimates the achievable force for each option using your magnet and coil settings."
+    st.session_state["magnet_length_mm"] = st.number_input(
+        "Magnet Length across Stator (mm)", min_value=1.0, max_value=100.0,
+        value=float(st.session_state["magnet_length_mm"]), step=1.0, format="%.1f",
+        help="Length of magnets perpendicular to travel."
+    )
+    st.session_state["air_gap_mm"] = st.number_input(
+        "Assembly Air Gap Clearance (mm)", min_value=0.05, max_value=10.0,
+        value=float(st.session_state["air_gap_mm"]), step=0.05, format="%.2f",
+        help="Physical clearance between magnet face and PCB top surface."
     )
 
-    manufacturer = st.selectbox(
-        "PCB manufacturer / design-rule tier",
-        ["JLCPCB Standard (5/5 mil)", "JLCPCB Advanced (3/3 mil)",
-         "PCBWay Standard", "Custom"],
-        index=0,
-    )
-    st.session_state["manufacturer"] = manufacturer
+    # Derived Pole Pitch feedback
+    pole_pitch = st.session_state["magnet_width_mm"] + st.session_state["magnet_gap_mm"]
+    st.caption(f"**Computed Pole Pitch (magnet width + gap):** **{pole_pitch:.2f} mm**")
 
-    # Build a draft config to estimate force
-    draft = build_config_from_wizard()
-    if draft is None:
-        st.warning("Fix earlier steps before estimating force here.")
-        return
-
-    target_n = draft.target_force_n
-    st.caption(f"Your force target from Step 5: **{target_n*1e3:.0f} mN** continuous")
-
-    # Layer comparison table
-    st.markdown("**Layer count comparison:**")
-    header = st.columns([1.5, 2, 2, 2, 2])
-    header[0].markdown("**Layers**")
-    header[1].markdown("**Est. force**")
-    header[2].markdown("**Meets target?**")
-    header[3].markdown("**Est. cost (5 boards)**")
-    header[4].markdown("")
-
-    recommended = None
-    for n in [4, 6, 8, 10, 12]:
-        force = _estimate_force_n(draft, n)
-        meets = force >= target_n
-        if meets and recommended is None:
-            recommended = n
-
-        cols = st.columns([1.5, 2, 2, 2, 2])
-        icon_f = "✅" if meets else "❌"
-        selected = (st.session_state.get("layer_count_override") == n)
-        cost_str = f"~${_COST_USD.get(n, '?')}"
-        badge_txt = " ← recommended" if (n == recommended and not selected) else ""
-        cols[0].markdown(f"**{n}**")
-        cols[1].markdown(f"{force*1e3:.0f} mN")
-        cols[2].markdown(f"{icon_f}")
-        cols[3].markdown(f"{cost_str}")
-        if cols[4].button(
-            "✓ Selected" if selected else "Choose",
-            key=f"layer_{n}",
-            type="primary" if selected else "secondary",
-        ):
-            st.session_state["layer_count_override"] = n
-            st.rerun()
-        if badge_txt:
-            cols[4].caption(badge_txt)
-
-    # Auto-select recommended if none chosen
-    if st.session_state.get("layer_count_override") is None and recommended:
-        st.session_state["layer_count_override"] = recommended
-
-    # Thermal check
-    chosen_n = st.session_state.get("layer_count_override", recommended or 6)
-    if draft:
-        try:
-            pb = PowerEstimator(layers_per_phase=chosen_n // draft.phases).estimate(draft)
-            dt_icon = badge(pb.temperature_rise_c, 20.0, 35.0, higher_is_better=False)
-            st.divider()
-            st.caption(
-                f"Thermal at {draft.max_current_a:.1f} A continuous, {chosen_n} layers: "
-                f"**ΔT ≈ {pb.temperature_rise_c:.0f} °C** {dt_icon} "
-                f"(budget: {draft.max_temperature_rise_c:.0f} °C)"
-            )
-        except Exception:
-            pass
-
-
-def _render_review_card(config: LinearMotorConfig) -> None:
-    """Full budget card shown after step 6 and in the review section."""
-    st.divider()
-    st.subheader("Design Review")
-    eli5("This is a summary of all the key numbers for your design. Green = good, Yellow = marginal, Red = a problem.")
-
-    chosen_n = st.session_state.get("layer_count_override", 6)
-    try:
-        hz  = HeightStackCalculator()
-        hs  = hz.calculate(config)
-        budget_m = mm(st.session_state["height_budget_mm"])
-        fits = hs.fits_in_budget(budget_m)
-
-        pb = PowerEstimator(layers_per_phase=chosen_n // config.phases).estimate(config)
-
-        force_est = _estimate_force_n(config, chosen_n)
-        topo_label = config.coil_topology.value.title()
-        arr_label  = {
-            MagnetArrangement.ALTERNATING: "Alternating",
-            MagnetArrangement.HALBACH: "Halbach",
-            MagnetArrangement.ALTERNATING_BACK_IRON: "Simple + back-iron",
-            MagnetArrangement.HALBACH_BACK_IRON: "Halbach + back-iron",
-        }.get(config.magnet_arrangement, "")
-
-        c1, c2, c3, c4, c5 = st.columns(5)
-        fi = badge(force_est, config.target_force_n, config.target_force_n * 0.8)
-        ti = badge(pb.temperature_rise_c, config.max_temperature_rise_c,
-                   config.max_temperature_rise_c * 1.5, higher_is_better=False)
-        hi = badge(1 if fits else 0, 1, 0.5)
-        pi = badge(pb.continuous_power_w, 0.01, 10.0, higher_is_better=False)
-
-        c1.metric(f"Force {fi}", f"{force_est*1e3:.0f} mN",
-                  delta=f"{(force_est - config.target_force_n)*1e3:+.0f} mN vs target")
-        c2.metric(f"Thermal {ti}", f"+{pb.temperature_rise_c:.0f} °C",
-                  delta=f"budget {config.max_temperature_rise_c:.0f} °C")
-        c3.metric(f"Height {hi}", f"{hs.total_height_m*1e3:.1f} mm",
-                  delta=f"{'fits' if fits else 'over'} {budget_m*1e3:.0f} mm budget")
-        c4.metric(f"Power {pi}", f"{pb.continuous_power_w*1e3:.0f} mW")
-        c5.metric("PCB",
-                  f"{chosen_n}L  {topo_label}",
-                  delta=arr_label)
-    except Exception as exc:
-        st.warning(f"Could not compute review card: {exc}")
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Advanced renderer
-# ─────────────────────────────────────────────────────────────────────────────
-
-def render_advanced() -> LinearMotorConfig | None:
-    st.subheader("⚙️ Advanced — Direct Parameter Control")
-    st.caption(
-        "All motor and PCB parameters exposed directly. "
-        "Use the Wizard mode if you want guided goal-first configuration."
+    # Magnet Grade dropdown with helper lookup
+    grade_choice = st.selectbox(
+        "Magnet Grade Selection",
+        list(_MAGNET_BR_LOOKUP.keys()),
+        index=list(_MAGNET_BR_LOOKUP.keys()).index(st.session_state["magnet_grade"]),
+        help="Select a standard grade to look up typical remanence Br, or choose Custom."
     )
 
     col_l, col_r = st.columns(2)
@@ -886,274 +714,178 @@ def render_advanced() -> LinearMotorConfig | None:
             list(arr_labels.values()),
             index=list(arr_labels.keys()).index(st.session_state["magnet_arrangement"]),
         )
-        st.session_state["magnet_arrangement"] = [
-            k for k, v in arr_labels.items() if v == arr_choice
-        ][0]
 
-        topo_labels = {t: t.value.title() for t in CoilTopology}
-        topo_choice = st.selectbox(
-            "Coil topology",
-            list(topo_labels.values()),
-            index=list(topo_labels.keys()).index(st.session_state["coil_topology"]),
-        )
-        st.session_state["coil_topology"] = [
-            k for k, v in topo_labels.items() if v == topo_choice
-        ][0]
-
-    return build_config_from_advanced()
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Output tabs
-# ─────────────────────────────────────────────────────────────────────────────
-
-def render_output_tabs(config: LinearMotorConfig) -> None:
+    # Magnet Arrangement selection with direct back-iron keeper inputs
     st.divider()
-    tab_geo, tab_mag, tab_force, tab_kicad = st.tabs([
-        "🔀 Coil Geometry", "🧲 Magnet Field", "📈 Force Preview", "🖥️ Write to KiCad"
-    ])
-
-    with tab_geo:
-        _tab_geometry(config)
-    with tab_mag:
-        _tab_magnets(config)
-    with tab_force:
-        _tab_force(config)
-    with tab_kicad:
-        _tab_kicad(config)
-
-
-def _tab_geometry(config: LinearMotorConfig) -> None:
-    st.subheader("Coil geometry preview")
-    from pcbstatorgen.geometry.coil_generators import make_coil_generator
-    gen = make_coil_generator(config.coil_topology)
-    if config.coil_topology == CoilTopology.SPIRAL:
-        coils = gen.generate(config, layer_pair=(0, 1))
-        coils = [c for c in coils if c.layer_idx == 0]  # primary layer only for display
-    else:
-        coils = gen.generate(config)
-
-    phase_colors = ["#e74c3c", "#2ecc71", "#3498db", "#9b59b6"]
-    fig, ax = plt.subplots(figsize=(14, 4))
-    for coil in coils:
-        color = phase_colors[coil.phase_idx % len(phase_colors)]
-        for seg in coil.active_segments:
-            ax.plot(
-                [seg.start[0] * 1000, seg.end[0] * 1000],
-                [seg.start[1] * 1000, seg.end[1] * 1000],
-                color=color, linewidth=2,
-            )
-        for seg in coil.end_turn_segments:
-            ax.plot(
-                [seg.start[0] * 1000, seg.end[0] * 1000],
-                [seg.start[1] * 1000, seg.end[1] * 1000],
-                color=color, linewidth=1, linestyle="--", alpha=0.5,
-            )
-    ax.set_xlabel("Travel axis (mm)")
-    ax.set_ylabel("Board width (mm)")
-    ax.set_title(
-        f"{config.coil_topology.value.title()} winding — "
-        f"{config.phases} phases, pole pitch {config.pole_pitch_m*1e3:.0f} mm"
+    st.markdown("**Flux Management**")
+    
+    arr_labels = {
+        MagnetArrangement.ALTERNATING: "Simple Alternating Poles",
+        MagnetArrangement.HALBACH: "Halbach Wavelength Concentrator",
+        MagnetArrangement.ALTERNATING_BACK_IRON: "Simple + Steel Back-Iron Keeper",
+        MagnetArrangement.HALBACH_BACK_IRON: "Halbach + Steel Back-Iron Keeper",
+    }
+    arr_choice = st.selectbox(
+        "Magnet Arrangement",
+        list(arr_labels.values()),
+        index=list(arr_labels.keys()).index(st.session_state["magnet_arrangement"]),
+        help="Select arrangement to shape and concentrate the magnetic flux."
     )
-    ax.set_aspect("equal", adjustable="box")
-    ax.grid(True, alpha=0.2)
-    fig.tight_layout()
-    st.pyplot(fig)
-    plt.close(fig)
+    st.session_state["magnet_arrangement"] = [
+        k for k, v in arr_labels.items() if v == arr_choice
+    ][0]
 
-    if coils:
-        n_active = coils[0].active_conductor_count
+    # Dynamically show Back-Iron thickness option if a back-iron arrangement is chosen
+    if st.session_state["magnet_arrangement"] in (MagnetArrangement.ALTERNATING_BACK_IRON, MagnetArrangement.HALBACH_BACK_IRON):
+        st.session_state["back_iron_mm"] = st.slider(
+            "Steel Keeper Plate (Back-Iron) Thickness (mm)", min_value=0.5, max_value=5.0,
+            value=float(max(0.5, st.session_state["back_iron_mm"])), step=0.5,
+            help="Sinks rear-side flux, reducing magnetic reluctance and boosting coupling."
+        )
+    else:
+        st.session_state["back_iron_mm"] = 0.0
+
+    st.divider()
+    st.subheader("⚡ Electrical Inputs & Targets")
+    
+    if st.session_state["motor_class"] == "Radial":
+        st.session_state["target_torque_m_nm"] = st.slider(
+            "Continuous Torque Target (mN·m)", min_value=1.0, max_value=2000.0,
+            value=float(st.session_state["target_torque_m_nm"]), step=10.0,
+            help="Target holding or continuous torque output."
+        )
+    else:
+        st.session_state["target_force_n"] = st.slider(
+            "Continuous Force Target (Newtons)", min_value=0.05, max_value=10.0,
+            value=float(st.session_state["target_force_n"]), step=0.05,
+            help="Target continuous thrust output perpendicular to the coils. 1 N ≈ 100g force."
+        )
+
+    # Unregulated Power Inputs (User inputs voltage & current limits directly)
+    st.session_state["supply_v"] = st.number_input(
+        "Custom Driver Supply Voltage (V)", min_value=1.0, max_value=120.0,
+        value=float(st.session_state["supply_v"]), step=0.5, format="%.1f",
+        help="The voltage of your custom power supply."
+    )
+    st.session_state["max_current_a"] = st.number_input(
+        "Custom Controller Continuous Current Limit (A)", min_value=0.1, max_value=50.0,
+        value=float(st.session_state["max_current_a"]), step=0.1, format="%.2f",
+        help="Maximum continuous phase current of your driver board."
+    )
+    
+    # Grounding scales helper container
+    st.caption(
+        "**Real-World System Scale Reference:**  \n"
+        "• *Phone Haptic*: 5V, 0.2A (1W)  \n"
+        "• *USB Standard Slot / Mixer*: 5V, 1A (5W)  \n"
+        "• *Small Drone Joint*: 12V, 3A (36W)  \n"
+        "• *Large Gimbal Actuator*: 24V, 5A (120W)  \n"
+        "• *Industrial Gantry*: 48V, 15A (480W)"
+    )
+
+    st.divider()
+    st.subheader("🛠️ PCB Layer & Manufacturing Limits")
+    st.session_state["layers"] = st.select_slider(
+        "Layers Count limit", [4, 6, 8, 10, 12], st.session_state["layers"],
+        help="The layer limit for the stator. More layers pack more copper but raise fab costs."
+    )
+    st.session_state["min_trace_mil"] = st.selectbox(
+        "PCB Trace Width Class", [3.0, 4.0, 5.0, 6.0, 8.0, 10.0],
+        index=[3.0, 4.0, 5.0, 6.0, 8.0, 10.0].index(st.session_state["min_trace_mil"]),
+        help="JLCPCB standard classes. Thinner trace widths fit more turns but have lower current limits."
+    )
+    st.session_state["min_space_mil"] = st.selectbox(
+        "PCB Trace Clearance Class", [3.0, 4.0, 5.0, 6.0, 8.0, 10.0],
+        index=[3.0, 4.0, 5.0, 6.0, 8.0, 10.0].index(st.session_state["min_space_mil"]),
+        help="Minimum spacing between parallel traces."
+    )
+
+with col_feedback:
+    st.subheader("📊 Live Analytical Performance Feedback")
+    
+    if config:
+        # 1. Height budget results stackup
+        hz_calc = HeightStackCalculator()
+        hs = hz_calc.calculate(config)
+        
+        # 2. Power loss thermals
+        pb = PowerEstimator(layers_per_phase=config.max_layers // config.phases).estimate(config)
+        
+        # 3. Analytical Force/Torque estimation
+        force_est = _estimate_force_n(config, config.max_layers)
+        
+        # Layout metrics row
         c1, c2, c3 = st.columns(3)
-        c1.metric("Active conductors/phase", n_active)
-        c2.metric("Active copper length/phase",
-                  f"{coils[0].active_length_m * 1e3:.0f} mm")
-        c3.metric("Topology", config.coil_topology.value.title())
-
-
-def _tab_magnets(config: LinearMotorConfig) -> None:
-    st.subheader("Magnetic field at PCB surface")
-    from pcbstatorgen.magnetic.magnet_model import MagnetArray
-
-    fader_pos_mm = st.slider(
-        "Fader position (mm)", 0.0, float(config.travel_m * 1000),
-        0.0, 1.0, key="fader_mag_tab",
-    )
-
-    arr = MagnetArray(config)
-    xs = np.linspace(0, config.active_length_m, 200)
-    B  = arr.bfield_at_pcb_surface(xs, fader_position_m=mm(fader_pos_mm))
-
-    fig, axes = plt.subplots(2, 1, figsize=(13, 6), sharex=True)
-    axes[0].plot(xs * 1000, B[:, 2] * 1000, color="#e74c3c", linewidth=1.5)
-    axes[0].fill_between(xs * 1000, B[:, 2] * 1000, 0,
-                         where=B[:, 2] > 0, alpha=0.15, color="#e74c3c", label="North")
-    axes[0].fill_between(xs * 1000, B[:, 2] * 1000, 0,
-                         where=B[:, 2] < 0, alpha=0.15, color="#3498db", label="South")
-    axes[0].axhline(0, color="gray", linewidth=0.5)
-    axes[0].set_ylabel("Bz (mT)")
-    axes[0].legend(fontsize=8)
-    axes[0].set_title(
-        f"Vertical field Bz — {config.magnet_arrangement.name} "
-        f"at {fader_pos_mm:.0f} mm fader position"
-    )
-    axes[0].grid(True, alpha=0.2)
-
-    axes[1].plot(xs * 1000, B[:, 0] * 1000, "#9b59b6", linewidth=1.5, label="Bx")
-    axes[1].plot(xs * 1000, B[:, 1] * 1000, "#27ae60", linewidth=1.0,
-                 linestyle="--", label="By", alpha=0.7)
-    axes[1].axhline(0, color="gray", linewidth=0.5)
-    axes[1].set_ylabel("B (mT)")
-    axes[1].set_xlabel("Position along travel (mm)")
-    axes[1].legend(fontsize=8)
-    axes[1].grid(True, alpha=0.2)
-    fig.tight_layout()
-    st.pyplot(fig)
-    plt.close(fig)
-
-    bz_peak = float(np.abs(B[:, 2]).max()) * 1000
-    bz_mean = float(np.abs(B[:, 2]).mean()) * 1000
-    c1, c2 = st.columns(2)
-    c1.metric("Peak |Bz|", f"{bz_peak:.0f} mT")
-    c2.metric("Mean |Bz|", f"{bz_mean:.0f} mT")
-    eli5(
-        f"Your {config.magnet_arrangement.name} array produces {bz_peak:.0f} mT peak at the PCB. "
-        f"For comparison, a fridge magnet is about 10 mT. Strong field = strong motor."
-    )
-
-
-def _tab_force(config: LinearMotorConfig) -> None:
-    st.subheader("Force vs fader position")
-    from pcbstatorgen.geometry.coil_generators import make_coil_generator
-    from pcbstatorgen.magnetic.force_eval import ForceEvaluator
-
-    col1, col2 = st.columns([1, 3])
-    with col1:
-        n_pos = st.select_slider("Resolution", [8, 12, 20, 30], 12, key="force_res")
-        meshing = st.select_slider("Accuracy", [5, 8, 10, 15], 5, key="force_mesh")
-        commutation = st.radio("Commutation", ["max_torque", "phase_a_only"], key="force_comm")
-        run = st.button("▶ Calculate Force", type="primary")
-        eli5("Start with low settings (8, 5) for a quick estimate (~5 s). "
-             "Increase for a final accurate result.")
-
-    with col2:
-        if run:
-            gen = make_coil_generator(config.coil_topology)
-            if config.coil_topology == CoilTopology.SPIRAL:
-                coils = gen.generate(config, layer_pair=(0, 1))
-            else:
-                coils = gen.generate(config)
-            with st.spinner("Computing magnetic force…"):
-                ev = ForceEvaluator(n_positions=n_pos, meshing=meshing, commutation=commutation)
-                result = ev.evaluate(config, coils)
-            st.session_state["force_result"] = result
-            st.session_state["force_config_label"] = (
-                f"{config.coil_topology.value}, {config.magnet_arrangement.name}, "
-                f"I={config.max_current_a:.1f}A"
-            )
-
-        if "force_result" in st.session_state:
-            result = st.session_state["force_result"]
-            label  = st.session_state.get("force_config_label", "")
-
-            pos_mm = result.positions_m * 1000
-            c1, c2, c3, c4 = st.columns(4)
-            fi = badge(result.mean_thrust_n, config.target_force_n, config.target_force_n * 0.8)
-            ri = badge(result.ripple_pct, 5.0, 15.0, higher_is_better=False)
-            c1.metric(f"Mean thrust {fi}", f"{result.mean_thrust_n*1e3:.1f} mN",
-                      delta=f"{(result.mean_thrust_n - config.target_force_n)*1e3:+.1f} mN")
-            c2.metric("Peak thrust",  f"{result.peak_thrust_n*1e3:.1f} mN")
-            c3.metric(f"Ripple {ri}", f"{result.ripple_pct:.1f} %")
-            c4.metric("Target met",
-                      "✅ Yes" if result.mean_thrust_n >= config.target_force_n else "❌ No")
-
-            fig2, ax2 = plt.subplots(figsize=(11, 4))
-            ax2.plot(pos_mm, result.force_x_n * 1000, "#e74c3c", linewidth=2, label="Thrust")
-            ax2.axhline(config.target_force_n * 1000, color="#27ae60", linewidth=1.5,
-                        linestyle="--", label=f"Target ({config.target_force_n*1e3:.0f} mN)")
-            ax2.axhline(result.mean_thrust_n * 1000, color="#f39c12", linewidth=1,
-                        linestyle=":", label=f"Mean")
-            ax2.set_xlabel("Fader position (mm)")
-            ax2.set_ylabel("Thrust (mN)")
-            ax2.set_title(f"Force profile — {label}")
-            ax2.legend(fontsize=8)
-            ax2.grid(True, alpha=0.2)
-            fig2.tight_layout()
-            st.pyplot(fig2)
-            plt.close(fig2)
+        
+        if st.session_state["motor_class"] == "Radial":
+            torque_m_nm_est = force_est * config.mean_radius_m * 1000.0  # mN·m
+            target_t_m_nm = config.target_torque_nm * 1000.0            # mN·m
+            ti_badge = badge(torque_m_nm_est, target_t_m_nm, target_t_m_nm * 0.8)
+            
+            c1.metric(f"Holding Torque {ti_badge}", f"{torque_m_nm_est:.1f} mN·m",
+                      delta=f"{torque_m_nm_est - target_t_m_nm:+.1f} mN·m vs target")
         else:
-            st.info("Click **Calculate Force** to run the Magpylib force model.")
+            target_f = config.target_force_n
+            fi_badge = badge(force_est, target_f, target_f * 0.8)
+            
+            c1.metric(f"Cont. Force {fi_badge}", f"{force_est*1000:.0f} mN",
+                      delta=f"{(force_est - target_f)*1000:+.0f} mN vs target")
 
+        dt_badge = badge(pb.temperature_rise_c, config.max_temperature_rise_c, config.max_temperature_rise_c * 1.5, higher_is_better=False)
+        c2.metric(f"Temp. Rise {dt_badge}", f"+{pb.temperature_rise_c:.0f} °C",
+                  delta=f"budget +{config.max_temperature_rise_c:.0f} °C")
+        
+        c3.metric("Winding Resistance", f"{pb.phase_resistance_ohm:.2f} Ω",
+                  help="Per-phase continuous copper trace resistance.")
+        
+        st.markdown("**Thickness Stackup Result**")
+        st.caption(f"Estimated total thickness of stator & magnet stack: **{hs.total_height_m*1000:.2f} mm**")
+        
+        # Plotly height stack drawing
+        stack_items = [
+            ("PCB Substrate (FR4)", 1.6, "#2c3e50"),
+            ("Copper Layers",       0.035 * config.max_layers, "#f39c12"),
+            ("Air gap clearance",   st.session_state["air_gap_mm"], "#3498db"),
+            ("Magnets (N44H)",      st.session_state["magnet_height_mm"], "#e74c3c"),
+        ]
+        if config.back_iron_thickness_m > 0:
+            stack_items.append(("Steel Back-Iron", config.back_iron_thickness_m * 1000, "#7f8c8d"))
+            
+        total_thick = sum(t for _, t, _ in stack_items)
+        fig_st, ax_st = plt.subplots(figsize=(6, 3))
+        y = 0
+        for label, thick, color in stack_items:
+            ax_st.barh(y, thick, left=0, height=0.8, color=color, alpha=0.85)
+            ax_st.text(thick + 0.1, y, f"{label} ({thick:.2f} mm)", va="center", fontsize=8)
+            y += 1
+        ax_st.set_xlim(0, total_thick * 1.8)
+        ax_st.set_yticks([])
+        ax_st.set_xlabel("Thickness (mm)")
+        ax_st.set_title(f"Stator Height Stack: {total_thick:.2f} mm", fontsize=10)
+        fig_st.tight_layout()
+        st.pyplot(fig_st, width="content")
+        plt.close(fig_st)
 
-def _tab_kicad(config: LinearMotorConfig) -> None:
-    st.subheader("Write layout to KiCad")
-    st.info(
-        "**Prerequisites:**  "
-        "KiCad 10 running · IPC API enabled (Preferences → Plugins) · "
-        "A `.kicad_pcb` file open in the PCB Editor"
+    st.divider()
+    st.subheader("🧩 Smoothness, Friction & Zero-Cogging")
+    
+    st.markdown(
+        "**Zero-Cogging Characteristic:**  \n"
+        "Because this design features an **air-core (coreless) PCB stator**, there are "
+        "no ferromagnetic slots or cores to attract the permanent magnets. Consequently, "
+        "**unenergized cogging torque/force is mathematically zero ($F_{cogging} = 0$)**. "
+        "This ensures maximum motion smoothness and haptic texture fidelity."
     )
-
-    check = st.button("🔌 Check KiCad connection")
-    if check:
-        with st.spinner("Connecting…"):
-            try:
-                from pcbstatorgen.kicad_writer.connection import KiCadConnection
-                conn = KiCadConnection()
-                conn.connect()
-                st.session_state["kicad_status"] = "connected"
-                st.session_state["kicad_board"] = conn.board_filename
-                st.session_state["kicad_layers"] = conn.copper_layer_count
-                conn.disconnect()
-            except Exception as exc:
-                st.session_state["kicad_status"] = f"error: {exc}"
-
-    status = st.session_state.get("kicad_status", "")
-    if status == "connected":
-        st.success(
-            f"✅ Connected — Board: **{st.session_state.get('kicad_board', '?')}**  "
-            f"| Copper layers: **{st.session_state.get('kicad_layers', '?')}**"
-        )
-    elif status.startswith("error"):
-        st.error(f"❌ {status[7:]}")
-
-    st.divider()
-    # Pipeline status
-    st.markdown("**Generation pipeline status:**")
-    phases_status = [
-        ("Phase 1", "config.py, units.py",              "✅ Complete"),
-        ("Phase 2", "geometry/ — wave winding, vias",   "✅ Complete"),
-        ("Phase 3", "magnetic/ — Magpylib force model", "✅ Complete"),
-        ("Phase 4", "stackup/ — layer optimizer",       "🔲 Next phase"),
-        ("Phase 5", "kicad_writer/ — IPC track/via",    "🔲 Pending"),
-        ("Phase 6", "optimization/ — bfieldtools",      "🔲 Pending"),
-        ("Phase 7", "export/ — GMSH + Elmer FEM",       "🔲 Pending"),
-    ]
-    for ph, mod, stat in phases_status:
-        c1, c2, c3 = st.columns([1, 3, 2])
-        c1.caption(ph)
-        c2.caption(f"`{mod}`")
-        c3.caption(stat)
-
-    st.divider()
-    if status == "connected":
-        st.button("🚀 Generate Coils in KiCad", type="primary", disabled=True,
-                  help="Available after Phase 5 (KiCad writer) is implemented")
-        st.caption("Phase 5 is next — Track, Via, Net, BoardStackup placement via IPC API.")
+    
+    # Calculate force ripple if force sweep result exists
+    if "force_result" in st.session_state:
+        fr = st.session_state["force_result"]
+        ri_badge = badge(fr.ripple_pct, 5.0, 15.0, higher_is_better=False)
+        st.metric(f"Harmonic Force Ripple {ri_badge}", f"{fr.ripple_pct:.1f} %",
+                  help="Spatial force/torque variations due to winding and magnet boundaries.")
     else:
-        st.button("🚀 Generate Coils in KiCad", disabled=True)
-        st.caption("Connect to KiCad first.")
+        st.caption("💡 *Run the Force/Torque Preview below to compute exact harmonic force ripple.*")
 
-    with st.expander("Configuration that will be sent to KiCad"):
-        st.code(config.summary(), language="text")
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Main
-# ─────────────────────────────────────────────────────────────────────────────
-
-if st.session_state["ui_mode"] == "wizard":
-    config = render_wizard()
-else:
-    config = render_advanced()
-
-if config is not None:
+# Render Output Tabs
+if config:
     render_output_tabs(config)
