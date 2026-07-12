@@ -212,6 +212,54 @@ class ForceEvaluator:
         self.meshing = meshing
         self.commutation = commutation
         self.layer_z_m = layer_z_m
+        self._phase_shift: float = 0.0
+        self._calibrated: bool = False
+
+    # ------------------------------------------------------------------
+    # Self-calibration guard (PRODUCT_GOALS.md §4.C)
+    # ------------------------------------------------------------------
+
+    def _self_calibrate(
+        self,
+        config: MotorConfig,
+        coils: list[PhaseCoil],
+    ) -> None:
+        """Newton's Third Law calibration guard.
+
+        Evaluates a single test step at +0.1τ_p forward.  If the resulting
+        mover force is negative, inverts phase currents (180° shift) to
+        align the FOC electrical angle with positive mechanical motion.
+
+        Also sets the sign convention: all returned forces are mover forces
+        (``F_mover = -F_stator``) per PRODUCT_GOALS.md §4.C.
+        """
+        test_pos = 0.1 * config.pole_pitch_m
+        self._phase_shift = 0.0
+        currents = self._commutation_currents(
+            config=config,
+            mover_position_m=test_pos,
+            n_phases=len(coils),
+        )
+        magnet_array = MagnetArray(config)
+        coil_model = CoilCurrentModel(
+            meshing=self.meshing,
+            layer_z_m=self.layer_z_m,
+        )
+        magnets = magnet_array.build_collection(mover_position_m=test_pos)
+        flat = coil_model.flat_polylines(
+            coil_model.build_all_phases(coils, currents)
+        )
+        if flat:
+            F, _ = magpy.getFT(magnets, flat)
+            F = np.atleast_2d(F)
+            f_mover_x = -float(F[:, 0].sum())
+            if f_mover_x < 0:
+                self._phase_shift = math.pi
+            else:
+                self._phase_shift = 0.0
+        else:
+            self._phase_shift = 0.0
+        self._calibrated = True
 
     # ------------------------------------------------------------------
     # Public API
@@ -237,6 +285,11 @@ class ForceEvaluator:
         -------
         ForceResult
         """
+        # Self-calibration guard (PRODUCT_GOALS.md §4.C):
+        # Test step at +0.1τ_p; if F_mover < 0, invert phase currents.
+        if not self._calibrated:
+            self._self_calibrate(config, coils)
+
         positions = np.linspace(0.0, config.travel_m, self.n_positions)
         magnet_array = MagnetArray(config)
         coil_model = CoilCurrentModel(
@@ -267,15 +320,16 @@ class ForceEvaluator:
             F, _ = magpy.getFT(magnets, flat)  # F shape: (n_conductors, 3) or (3,)
             F = np.atleast_2d(F)               # ensure (n_conductors, 3)
 
-            force_x[i] = float(F[:, 0].sum())
-            force_y[i] = float(F[:, 1].sum())
-            force_z[i] = float(F[:, 2].sum())
+            # Newton's Third Law: F_mover = -F_stator (PRODUCT_GOALS.md §4.C)
+            force_x[i] = -float(F[:, 0].sum())
+            force_y[i] = -float(F[:, 1].sum())
+            force_z[i] = -float(F[:, 2].sum())
 
             # Per-phase breakdown
             idx = 0
             for p, src in enumerate(phase_sources):
                 n_cond = len(src)
-                per_phase_x[i, p] = float(F[idx : idx + n_cond, 0].sum())
+                per_phase_x[i, p] = -float(F[idx : idx + n_cond, 0].sum())
                 idx += n_cond
 
         return ForceResult(
@@ -302,6 +356,10 @@ class ForceEvaluator:
             ``(F_total, T_total)`` — total force [N] and torque [N·m],
             each shape ``(3,)``.
         """
+        # Ensure calibration is applied (PRODUCT_GOALS.md §4.C)
+        if not self._calibrated:
+            self._self_calibrate(config, coils)
+
         currents = self._commutation_currents(
             config=config,
             mover_position_m=mover_position_m,
@@ -319,7 +377,8 @@ class ForceEvaluator:
         F, T = magpy.getFT(magnets, flat)
         F = np.atleast_2d(F)
         T = np.atleast_2d(T)
-        return F.sum(axis=0), T.sum(axis=0)
+        # Newton's Third Law: F_mover = -F_stator, T_mover = -T_stator
+        return -F.sum(axis=0), -T.sum(axis=0)
 
     # ------------------------------------------------------------------
     # Commutation
@@ -359,9 +418,9 @@ class ForceEvaluator:
         # at the PCB surface is still 2τ, not τ.  No period change is needed here.
         # (If a true 4-magnet equal-width Halbach were used — ↑→↑← with Z+ at both
         # x=0 and x=τ — the period would be τ and this formula would need updating.)
-        # π offset aligns IA = sin(θ_e) with cos(θ) so that current peaks
-        # when Phase A conductors are centred over magnet poles (max Bz).
-        theta_e = 2.0 * math.pi * mover_position_m / (2.0 * config.pole_pitch_m) + math.pi
+        # Phase shift is set dynamically by the self-calibration guard
+        # (_self_calibrate) to align FOC electrical angle with positive motion.
+        theta_e = 2.0 * math.pi * mover_position_m / (2.0 * config.pole_pitch_m) + self._phase_shift
         phase_offset = 2.0 * math.pi / n_phases  # 120° for 3-phase
         return [
             I_pk * math.sin(theta_e - p * phase_offset)

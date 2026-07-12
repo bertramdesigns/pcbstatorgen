@@ -1,4 +1,10 @@
 //! Height stack, power budget, friction budget.
 //! Ports `pcbstatorgen/stackup/`.
-//! TODO(general): port HeightStackCalculator, PowerEstimator, FrictionEstimator.
-//!   See .opencode/active_task.json — Phase E.
+
+pub mod friction;
+pub mod height_stack;
+pub mod power;
+
+pub use friction::{mu_bearing, FrictionEstimator};
+pub use height_stack::HeightStackCalculator;
+pub use power::PowerEstimator;

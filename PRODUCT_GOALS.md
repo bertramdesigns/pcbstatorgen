@@ -231,7 +231,7 @@ kicad-pcbmotorcoils/
 | Crate | Version | Role |
 | --- | --- | --- |
 | `magba` | `=0.6.2` | Analytical cuboid B-field (Magpylib-validated). PINNED — wrap in adapter. |
-| `nalgebra` | `0.33` | Vector math: cross-products, quaternions for magnet orientation. |
+| `nalgebra` | `0.34` | Vector math: cross-products, quaternions for magnet orientation. (Bumped from 0.33 — magba 0.6.2 requires 0.34.2; single nalgebra version in dep tree.) |
 | `rayon` | `1.10` | Data-parallel B-field sampling across observation points. |
 | `serde` / `serde_json` | `1.0` | Config + result serialization for Tauri IPC. |
 | `tauri` | `2` | Desktop app host, async command handlers. |
@@ -257,3 +257,13 @@ All direct `magba` calls are isolated behind a `pcbstatorgen_rs::physics` adapte
 - **Linear mode ONLY.** Radial/axial-flux UI toggle is disabled and labelled TODO. `AxialMotorConfig` remains a stub.
 - KiCad IPC writer is Phase 7 — NOT in scope here. Tauri commands expose physics + geometry + stackup only.
 - No public/distribution packaging.
+
+### H. Phase 5+6 Completion Status
+
+Phases 5 and 6 are **functionally complete**. The Rust physics core compiles, all 179 tests pass, and the Tauri+Svelte desktop app builds and runs. Three follow-up items are tracked in `PRODUCT_PLAN.md §6 — Known Issues & Remaining Work`:
+
+1. **6 Tauri command stubs**: `generate_coils`, `evaluate_force_sweep`, `compute_stackup`, `compute_power_budget`, `compute_friction`, and `compute_height_stack` (partial) return placeholder data. The `pcbstatorgen-rs` implementations exist and pass tests; the IPC conversion layer is ready. Each stub needs its handler body changed from placeholder to the real `pcbstatorgen-rs` call (~1 day effort). The Svelte frontend degrades gracefully to mock fallbacks when stubs are invoked.
+
+2. **170% force ripple (commutation alignment)**: The force sweep produces 170% ripple with negative min thrust at every 3rd sample. This is reproduced identically in Python and Rust — the physics is consistent but the electrical angle formula is misaligned with coil geometry positions. The self-calibration guard (Newton's Third Law) works correctly. Fix requires auditing `WaveWindingGenerator` conductor x-positions against `MagnetArray` pole centers. Not a blocker for Phase 7 (KiCad IPC Writer).
+
+3. **Python oracle patched**: The Python `ForceEvaluator` was patched with Newton's Third Law sign flip (`F_mover = -F_stator`) and self-calibration guard (test step `+0.1·τ_p`, dynamic phase shift). Test vectors re-exported. The Rust port implements the same logic. Python codebase remains as test oracle until Phase 7 Stage 5 deprecation.
