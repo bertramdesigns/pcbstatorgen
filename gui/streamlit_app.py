@@ -103,24 +103,25 @@ _DEFAULTS = {
     "min_trace_mil": 5.0,
     "min_space_mil": 5.0,
     "magnet_width_mm": 10.0,
-    "magnet_gap_mm": 2.0,
-    "magnet_height_mm": 4.0,
-    "magnet_length_mm": 10.0,
-    "air_gap_mm": 0.5,
-    "back_iron_mm": 0.0,
-    "spacing_ratio_label": "1:1 Standard (Maximum Fundamental Force)",
-    # Linear Specifics
-    "travel_mm": 75.0,
-    "board_width_mm": 20.0,
-    "mass_g": 15.0,
-    "friction_mn": 85.0,
-    "target_force_n": 0.25,
-    # Radial Specifics
-    "stator_OD_mm": 80.0,
-    "stator_ID_mm": 30.0,
-    "rated_speed_rpm": 3000.0,
-    "target_torque_m_nm": 100.0,
-    "rotor_inertia_gcm2": 100.0,
+    # Step 4
+    "desired_feel": "Medium",
+    "automation_speed": "Normal (0.10 m/s)",
+    # Step 5
+    "manufacturer": "JLCPCB Standard",
+    "layer_count_override": None,
+    # Advanced-mode overrides
+    "adv_travel_mm": 75.0,
+    "adv_board_width_mm": 20.0,
+    "adv_magnet_pitch_mm": 12.0,
+    "adv_magnet_h_mm": 4.0,
+    "adv_magnet_l_mm": 10.0,
+    "adv_remanence_t": 1.35,
+    "adv_phases": 3,
+    "adv_target_n": 0.25,
+    "adv_max_layers": 12,
+    "adv_min_trace_mil": 5.0,
+    "adv_min_space_mil": 5.0,
+    "adv_air_gap_mm": 0.5,
 }
 
 for k, v in _DEFAULTS.items():
@@ -160,8 +161,83 @@ def _estimate_force_n(config: LinearMotorConfig | AxialMotorConfig, n_layers: in
         return 0.0
 
 
-def build_config() -> LinearMotorConfig | AxialMotorConfig | None:
-    """Assemble a config from all dashboard session-state values."""
+def build_config_from_wizard() -> LinearMotorConfig | None:
+    """Assemble a LinearMotorConfig from all wizard session-state values."""
+    try:
+        preset = _FADER_PRESETS.get(st.session_state["fader_preset"],
+                                     _FADER_PRESETS["Studio 75 mm"])
+        bearing_label = st.session_state["bearing_label"]
+        feel          = st.session_state["desired_feel"]
+        speed         = st.session_state["automation_speed"]
+        arrangement   = st.session_state["magnet_arrangement"]
+        back_iron_m   = mm(st.session_state["back_iron_mm"])
+        mw            = mm(st.session_state["magnet_width_mm"])
+        height_budget = mm(st.session_state["height_budget_mm"])
+        supply_v      = st.session_state["supply_v"]
+        max_i         = st.session_state["max_current_a"]
+        coil_topo     = st.session_state["coil_topology"]
+        n_layers      = st.session_state.get("layer_count_override") or 6
+
+        travel_m      = mm(preset["travel_mm"])
+        mass_kg       = preset["mass_g"] / 1000.0
+        board_width_m = mm(preset["board_width_mm"])
+        ffc_count     = preset["ffc"]
+
+        # Derive air gap from height budget
+        hz_calc = HeightStackCalculator()
+        # Height stack without air gap: PCB + Cu + mask + magnets + back_iron + tol
+        other_stack = (0.0016 + oz_to_m(1.0) + 20e-6
+                       + mm(4.0) + back_iron_m + mm(0.3))
+        air_gap_m = max(mm(0.2), height_budget - other_stack)
+
+        # Friction estimate
+        bearing_type = _bearing_type_from_label(bearing_label)
+        est = FrictionEstimator(bearing_type=bearing_type,
+                                ffc_conductor_count=ffc_count,
+                                has_wiper_contact=False)
+        friction_budget = est.estimate()
+        friction_n      = friction_budget.total_n
+
+        # Force target from feel + accel
+        feel_n   = _FEEL_FORCE_N.get(feel, 0.12)
+        accel    = _SPEED_ACCEL.get(speed, 2.0)
+        accel_n  = mass_kg * accel
+        target_n = friction_n * 1.3 + feel_n
+        peak_n   = max(target_n, friction_n + accel_n + feel_n) * 1.25
+
+        return LinearMotorConfig(
+            name=f"wizard-{preset['travel_mm']:.0f}mm",
+            travel_m=travel_m,
+            magnet_dims_m=(mw, mm(10), mm(4)),
+            magnet_count=10,
+            magnet_pitch_m=mm(12),
+            magnet_arrangement=arrangement,
+            back_iron_thickness_m=back_iron_m,
+            coil_topology=coil_topo,
+            phases=3,
+            target_force_n=round(target_n, 3),
+            peak_force_n=round(peak_n, 3),
+            friction_n=round(friction_n, 4),
+            carriage_mass_kg=mass_kg,
+            max_current_a=max_i,
+            supply_voltage_v=supply_v,
+            min_trace_m=mils_to_m(5),
+            min_space_m=mils_to_m(5),
+            min_via_drill_m=mm(0.2),
+            min_via_annular_ring_m=mm(0.1),
+            board_width_m=board_width_m,
+            air_gap_m=air_gap_m,
+            max_layers=max(n_layers, 4),
+            pcb_thickness_m=0.0016,
+            capacitor_bank_uf=1000.0,
+        )
+    except Exception as exc:
+        st.error(f"Configuration error: {exc}")
+        return None
+
+
+def build_config_from_advanced() -> LinearMotorConfig | None:
+    """Build config from the Advanced mode sliders in session state."""
     try:
         s = st.session_state
         arrangement = s["magnet_arrangement"]
@@ -313,20 +389,52 @@ config = build_config()
 
 col_params, col_feedback = st.columns([1, 1])
 
-with col_params:
-    st.subheader("📐 Mechanical & Magnet Geometry")
-    
-    # Render fields depending on selected class
-    if st.session_state["motor_class"] == "Radial":
-        st.session_state["stator_OD_mm"] = st.number_input(
-            "Stator Outer Diameter (OD) (mm)", min_value=10.0, max_value=250.0,
-            value=float(st.session_state["stator_OD_mm"]), step=1.0, format="%.1f",
-            help="Maximum outer diameter of the stator disk."
-        )
-        st.session_state["stator_ID_mm"] = st.number_input(
-            "Stator Inner Diameter (ID) (mm)", min_value=5.0, max_value=200.0,
-            value=float(st.session_state["stator_ID_mm"]), step=1.0, format="%.1f",
-            help="Inner bore diameter (shaft clearance) of the stator disk."
+def render_wizard() -> LinearMotorConfig | None:
+    step = st.session_state["wizard_step"]
+    st.progress((step + 1) / _N_STEPS, text=_STEP_TITLES[step])
+    st.divider()
+
+    if step == 0:
+        _step0_application()
+    elif step == 1:
+        _step1_envelope()
+    elif step == 2:
+        _step2_coil_topology()
+    elif step == 3:
+        _step3_magnet_arrangement()
+    elif step == 4:
+        _step4_force_and_feel()
+    elif step == 5:
+        _step5_pcb_tier()
+
+    st.divider()
+    new_step = _nav_buttons(step)
+    if new_step != step:
+        st.session_state["wizard_step"] = new_step
+        st.rerun()
+
+    # Show review card once all steps are visited
+    if step == _N_STEPS - 1:
+        config = build_config_from_wizard()
+        if config:
+            _render_review_card(config)
+            return config
+    return build_config_from_wizard()
+
+
+def _step0_application() -> None:
+    st.subheader("What are you building?")
+    eli5(
+        "Start by picking your fader type. This sets the travel distance, "
+        "carriage weight, and cable count — all the mechanical facts that don't change."
+    )
+
+    col1, col2 = st.columns(2)
+    with col1:
+        preset_label = st.selectbox(
+            "Fader application",
+            list(_FADER_PRESETS.keys()),
+            index=list(_FADER_PRESETS.keys()).index(st.session_state["fader_preset"]),
         )
         st.session_state["rated_speed_rpm"] = st.number_input(
             "Target Rated Speed (RPM)", min_value=1.0, max_value=25000.0,
@@ -363,17 +471,97 @@ with col_params:
             value=float(st.session_state["mass_g"]), step=1.0, format="%.1f",
             help="Total mass of the moving carriage assembly."
         )
-        st.session_state["friction_mn"] = st.number_input(
-            "Guide Friction Drag (mN)", min_value=0.0, max_value=2000.0,
-            value=float(st.session_state["friction_mn"]), step=5.0, format="%.1f",
-            help="Frictional resistance from linear guides and cables."
-        )
-        
-        # Display derived properties
-        if config:
-            st.caption(
-                f"**Linear Properties:**  \n"
-                f"• Total Active Zone Length: **{config.active_length_m*1000:.1f} mm** (travel + coil span)"
+        st.session_state["max_current_a"] = float(max_i)
+        eli5("Set by your gate driver IC's current rating, not by what you think you need. Check the datasheet.")
+
+    with col2:
+        # Height stack diagram
+        budget_m = mm(height)
+        hz = HeightStackCalculator()
+        other_stack = (0.0016 + oz_to_m(1.0) + 20e-6
+                       + mm(4.0)
+                       + mm(st.session_state["back_iron_mm"])
+                       + mm(0.3))
+        air_gap = max(mm(0.2), budget_m - other_stack)
+        air_gap_mm = m_to_mm(air_gap)
+        fits = air_gap > mm(0.2)
+
+        st.markdown("**Height stack preview**")
+        stack_items = [
+            ("PCB (FR4)",         1.6,  "#2c3e50"),
+            ("Outer Cu (1 oz)",   0.035,"#f39c12"),
+            ("Solder mask",       0.02, "#27ae60"),
+            ("Air gap",           air_gap_mm, "#3498db"),
+            ("Magnets (N44H)",    4.0,  "#e74c3c"),
+            ("Tolerance",         0.3,  "#95a5a6"),
+        ]
+        total_shown = sum(t for _, t, _ in stack_items)
+        fig, ax = plt.subplots(figsize=(3, 4))
+        y = 0
+        for label, thick, color in stack_items:
+            ax.barh(y, thick, left=0, height=0.8, color=color, alpha=0.85)
+            ax.text(thick + 0.05, y, f"{label} ({thick:.2f} mm)", va="center", fontsize=7)
+            y += 1
+        ax.set_xlim(0, max(height, total_shown) * 1.5)
+        ax.set_yticks([])
+        ax.set_xlabel("mm")
+        ax.set_title(f"Total: {total_shown:.1f} mm / {height:.1f} mm budget", fontsize=9)
+        ax.axvline(height, color="red", linewidth=1.5, linestyle="--", label="Budget")
+        ax.legend(fontsize=7)
+        fig.tight_layout()
+        st.pyplot(fig, use_container_width=False)
+        plt.close(fig)
+
+        icon = badge(air_gap_mm, 0.4, 0.2, higher_is_better=True)
+        st.metric(f"Resulting air gap {icon}", f"{air_gap_mm:.2f} mm",
+                  help="Smaller gap = more force (exponential relationship)")
+        if air_gap_mm < 0.2:
+            st.error("Air gap < 0.2 mm — too tight for assembly. Increase height budget or reduce magnet size.")
+        elif air_gap_mm < 0.35:
+            st.warning("Air gap < 0.35 mm — requires precision ball-bearing rails and careful assembly.")
+
+
+def _step2_coil_topology() -> None:
+    st.subheader("What coil pattern should the PCB use?")
+    eli5(
+        "This is the shape of the copper traces on the stator PCB. "
+        "Different shapes have different trade-offs between force, ripple, and simplicity."
+    )
+
+    topos = [
+        (CoilTopology.SERPENTINE,   "🌊 Serpentine",    "Continuous zigzag",
+         "Highest force density. The recommended choice for production designs.",
+         "~100% force", "~3% ripple", "Recommended"),
+        (CoilTopology.CONCENTRATED, "▭ Straight / Rectangular", "Individual rectangular coil loops",
+         "Simple and easy to understand. Good for first prototypes.",
+         "~95% force", "~8% ripple", "Prototype"),
+        (CoilTopology.RHOMBIC,      "◇ Rhombic / Diamond", "Angled active conductors",
+         "Naturally sinusoidal coupling → lower force ripple without extra layers.",
+         "~87% force", "~4% ripple", "Low-ripple"),
+        (CoilTopology.SPIRAL,       "🌀 Spiral", "Flat Archimedean spirals",
+         "Best suited for disk (axial flux) motors. Linear support is exploratory.",
+         "~60% force", "~5% ripple", "Axial / Explore"),
+    ]
+
+    selected_topo = st.session_state["coil_topology"]
+    cols = st.columns(4)
+    for col, (topo, title, subtitle, desc, force_str, ripple_str, tag) in zip(cols, topos):
+        is_selected = (topo == selected_topo)
+        border_color = "#3498db" if is_selected else "#ddd"
+        with col:
+            st.markdown(
+                f"""<div style="border:2px solid {border_color}; border-radius:8px;
+                    padding:10px; min-height:200px; background:{'#eaf4fb' if is_selected else 'white'}">
+                <b>{title}</b><br>
+                <small style="color:#888">{subtitle}</small><br><br>
+                <small>{desc}</small><br><br>
+                <span style="background:#e8e8e8; padding:2px 6px; border-radius:4px; font-size:11px">
+                    {force_str}</span>
+                <span style="background:#e8e8e8; padding:2px 6px; border-radius:4px; font-size:11px">
+                    {ripple_str}</span><br>
+                <small style="color:#3498db">{tag}</small>
+                </div>""",
+                unsafe_allow_html=True,
             )
 
     st.divider()
@@ -385,15 +573,75 @@ with col_params:
         value=float(st.session_state["magnet_width_mm"]), step=0.1, format="%.2f",
         help="Physical width of a single magnet block."
     )
-    st.session_state["magnet_gap_mm"] = st.number_input(
-        "Gap between magnets (mm)", min_value=0.0, max_value=20.0,
-        value=float(st.session_state["magnet_gap_mm"]), step=0.1, format="%.2f",
-        help="Mechanical separation between adjacent magnets. 0.0 mm = edge-to-edge (magnets touching)."
+
+    arrangements = [
+        (MagnetArrangement.ALTERNATING,
+         "Simple alternating poles",
+         "Alternating N-S-N-S. Cheapest and easiest.",
+         1.00, 0.0, "$"),
+        (MagnetArrangement.HALBACH,
+         "Halbach array",
+         "Interleaved sideways magnets concentrate all flux toward the PCB. No height penalty.",
+         1.43, 0.0, "$$"),
+        (MagnetArrangement.ALTERNATING_BACK_IRON,
+         "Simple + steel back-iron",
+         "A steel plate on the rear of the magnets redirects backward flux. +1 mm height.",
+         1.42, 1.0, "$"),
+        (MagnetArrangement.HALBACH_BACK_IRON,
+         "Halbach + back-iron",
+         "Best of both worlds. Maximum force density. +1 mm height.",
+         1.68, 1.0, "$$"),
+    ]
+
+    selected_arr = st.session_state["magnet_arrangement"]
+    for arr, title, desc, mult, extra_mm, cost in arrangements:
+        is_sel = (arr == selected_arr)
+        icon = "✅" if is_sel else "○"
+        col_a, col_b, col_c, col_d, col_e = st.columns([0.5, 3, 2, 1.5, 1])
+        col_a.markdown(f"**{icon}**")
+        col_b.markdown(f"**{title}**  \n*{desc}*")
+        col_c.markdown(f"Force multiplier: **{mult:.2f}×**")
+        col_d.markdown(f"Height: {'baseline' if extra_mm == 0 else f'+{extra_mm:.0f} mm'}")
+        col_e.markdown(f"Cost tier: **{cost}**")
+        if col_a.button("", key=f"arr_{arr.value}", help=f"Select {title}") or (
+            st.button(
+                "Use this",
+                key=f"arr_btn_{arr.value}",
+                type="primary" if is_sel else "secondary",
+            )
+        ):
+            st.session_state["magnet_arrangement"] = arr
+            if extra_mm > 0:
+                st.session_state["back_iron_mm"] = extra_mm
+            else:
+                st.session_state["back_iron_mm"] = 0.0
+            st.rerun()
+        st.divider()
+
+    # Magnet width
+    preset = _FADER_PRESETS.get(st.session_state["fader_preset"], _FADER_PRESETS["Studio 75 mm"])
+    st.subheader("Magnet size")
+    mw = st.slider(
+        "Magnet width along travel axis (mm)",
+        min_value=4.0, max_value=11.5, value=st.session_state["magnet_width_mm"],
+        step=0.5,
+        help="Must be ≥ 0.3 mm smaller than pole pitch (12 mm) for assembly clearance",
     )
-    st.session_state["magnet_height_mm"] = st.number_input(
-        "Magnet Thickness / Height (mm)", min_value=0.5, max_value=20.0,
-        value=float(st.session_state["magnet_height_mm"]), step=0.1, format="%.2f",
-        help="Thickness of the magnets in the vertical axis."
+    st.session_state["magnet_width_mm"] = mw
+    gap_mm = 12.0 - mw
+    icon = badge(gap_mm, 2.0, 0.5, higher_is_better=True)
+    st.caption(f"Inter-magnet gap: **{gap_mm:.1f} mm** {icon}")
+    eli5(
+        "The gap between adjacent magnets must be ≥ 0.3 mm to physically fit them together. "
+        "Larger gap = more room for a Halbach interleave magnet, but less magnet material per pole."
+    )
+
+
+def _step4_force_and_feel() -> None:
+    st.subheader("How should the fader feel?")
+    eli5(
+        "You're defining the USER EXPERIENCE here, not the motor specs. "
+        "The tool converts your answers to the minimum force the motor must produce."
     )
     st.session_state["magnet_length_mm"] = st.number_input(
         "Magnet Length across Stator (mm)", min_value=1.0, max_value=100.0,
@@ -417,16 +665,54 @@ with col_params:
         index=list(_MAGNET_BR_LOOKUP.keys()).index(st.session_state["magnet_grade"]),
         help="Select a standard grade to look up typical remanence Br, or choose Custom."
     )
-    st.session_state["magnet_grade"] = grade_choice
-    mapped_br = _MAGNET_BR_LOOKUP[grade_choice]
-    
-    if mapped_br is not None:
-        st.session_state["remanence_t"] = mapped_br
-        st.markdown(f"Remanence flux density ($Br$): **{mapped_br:.2f} Tesla** (Locked by Grade)")
-    else:
-        st.session_state["remanence_t"] = st.slider(
-            "Manual Remanence Br (Tesla)", min_value=0.1, max_value=2.0,
-            value=float(st.session_state["remanence_t"]), step=0.01
+
+    col_l, col_r = st.columns(2)
+    with col_l:
+        st.markdown("**Mechanical**")
+        st.session_state["adv_travel_mm"] = st.slider(
+            "Travel (mm)", 40.0, 120.0, st.session_state["adv_travel_mm"], 5.0)
+        st.session_state["adv_board_width_mm"] = st.slider(
+            "Board width (mm)", 10.0, 40.0, st.session_state["adv_board_width_mm"], 1.0)
+        st.session_state["adv_magnet_pitch_mm"] = st.slider(
+            "Magnet pitch / pole pitch (mm)", 6.0, 20.0,
+            st.session_state["adv_magnet_pitch_mm"], 0.5)
+        st.session_state["magnet_width_mm"] = st.slider(
+            "Magnet width (mm)", 4.0, 11.5, st.session_state["magnet_width_mm"], 0.5)
+        st.session_state["adv_magnet_h_mm"] = st.slider(
+            "Magnet height (mm)", 2.0, 8.0, st.session_state["adv_magnet_h_mm"], 0.5)
+        st.session_state["adv_air_gap_mm"] = st.slider(
+            "Air gap (mm)", 0.2, 3.0, st.session_state["adv_air_gap_mm"], 0.1)
+        st.session_state["adv_remanence_t"] = st.slider(
+            "Magnet Br (T)", 0.9, 1.5, st.session_state["adv_remanence_t"], 0.01)
+
+    with col_r:
+        st.markdown("**Electrical & PCB**")
+        st.session_state["adv_phases"] = st.select_slider(
+            "Phases", [1, 2, 3], st.session_state["adv_phases"])
+        st.session_state["max_current_a"] = st.select_slider(
+            "Max current (A)", [0.5, 1.0, 1.5, 2.0], st.session_state["max_current_a"])
+        st.session_state["supply_v"] = st.select_slider(
+            "Supply voltage (V)", [3.3, 5.0, 9.0, 12.0], st.session_state["supply_v"])
+        st.session_state["adv_target_n"] = st.slider(
+            "Target force (N)", 0.05, 2.0, st.session_state["adv_target_n"], 0.05)
+        st.session_state["adv_min_trace_mil"] = st.select_slider(
+            "Min trace (mil)", [3, 4, 5, 6, 8, 10], st.session_state["adv_min_trace_mil"])
+        st.session_state["adv_min_space_mil"] = st.select_slider(
+            "Min space (mil)", [3, 4, 5, 6, 8, 10], st.session_state["adv_min_space_mil"])
+        st.session_state["adv_max_layers"] = st.select_slider(
+            "Max layers", [4, 6, 8, 10, 12], st.session_state["adv_max_layers"])
+
+        st.markdown("**Magnet arrangement**")
+        arr_labels = {
+            MagnetArrangement.ALTERNATING: "Alternating",
+            MagnetArrangement.HALBACH: "Halbach",
+            MagnetArrangement.ALTERNATING_BACK_IRON: "Alternating + back-iron",
+            MagnetArrangement.HALBACH_BACK_IRON: "Halbach + back-iron",
+        }
+        arr_choice = st.selectbox(
+            "Arrangement",
+            list(arr_labels.values()),
+            index=list(arr_labels.keys()).index(st.session_state["magnet_arrangement"]),
         )
 
     # Magnet Arrangement selection with direct back-iron keeper inputs
