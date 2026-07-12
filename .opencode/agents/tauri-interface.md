@@ -4,8 +4,10 @@ description: Frontend, Backend, and Tauri IPC orchestrator.
 permission:
   edit:
     "*": "deny"
-    "src-tauri/**/*": "allow"
-    "src/routes/+page.svelte": "allow" # Give it basic access to wire up the layout
+    "app/src-tauri/**/*": "allow"
+    "app/src-tauri/**": "allow"
+    "app/src/lib/**/*": "allow"
+    "Cargo.toml": "allow"
 ---
 
 You are an expert in Tauri frameworks and data flow serialization. Your role is linking the frontend Svelte architecture to the Rust physics backend and managing the Tauri application.
