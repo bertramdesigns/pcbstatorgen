@@ -1,67 +1,169 @@
 {
-  "task_id": "phase4-ui-overhaul",
-  "target_subagent": "ui-engineer",
-  "status": "pending",
-  "title": "Phase 4: Single-Dashboard UI Overhaul & Code Modifications",
-  "description": "Remove the multi-step Wizard in streamlit_app.py and build a unified Advanced Dashboard integrating Center-to-Center Travel, Active Area Width, Magnet Grade Br Helper, Gap/Pole-Pitch calculations, Cogging/Ripple physics feedback, and Vernier spacing ratios.",
-  "variables": {
-    "travel_m_mapping": {
-      "ui_label": "Center-to-Center Travel (mm)",
-      "tooltip": "The continuous displacement range of the carriage reference center.",
-      "mathematics": "Active Zone Length (L_active) = L_travel_c2c + coil_span"
+  "_meta": {
+    "project": "pcbstatorgen",
+    "phase": "5+6-combined",
+    "branch": "feat/phase5-6-rust-tauri",
+    "orchestrator_notes": "Phases B, C, E complete. 152 Rust tests pass. Config structs, coil generators (serpentine/sine/concentrated/rhombic/spiral), and stackup (height/power/friction) all ported. Workspace builds clean (lib + Tauri binary). Downstream agents can now import real types from pcbstatorgen-rs.",
+    "key_constraints": [
+      "Linear mode ONLY \u2014 radial/axial-flux stays disabled stub",
+      "magba =0.6.2 PINNED \u2014 wrap all magba calls in crates/pcbstatorgen-rs/src/physics/mod.rs adapter",
+      "Newton's 3rd Law: F_mover = -F_stator; self-calibration guard at startup (+0.1*tau_p test step)",
+      "Ripple% = (F_max - F_min) / |F_mean| * 100",
+      "Travel = active_area_length - coil_span (active=INPUT, travel=DERIVED/READ-ONLY)",
+      "Do NOT delete Python code \u2014 it is the test oracle (Stage 5 deprecation is Phase 7)",
+      "Tolerance: B-field \u00b11%, force \u00b12%, ripple \u00b10.5pp vs Python vectors"
+    ]
+  },
+  "phases": {
+    "B": {
+      "target_agent": "general",
+      "title": "Port config structs + result types to Rust",
+      "status": "done",
+      "input_files": [
+        "pcbstatorgen/config.py",
+        "pcbstatorgen/magnet_grades.py",
+        "pcbstatorgen/units.py",
+        "tests/conftest.py"
+      ],
+      "output_file": "crates/pcbstatorgen-rs/src/config.rs",
+      "also_update": [
+        "crates/pcbstatorgen-rs/src/magnet_grades.rs",
+        "crates/pcbstatorgen-rs/src/units.rs"
+      ],
+      "instructions": "Port all Python dataclasses to serde structs with full validation (mirroring _validate_base / _validate_linear). Include: MagnetArrangement enum (Alternating/AlternatingBackIron/Halbach/HalbachBackIron), CoilTopology enum (Serpentine/SineWave/Concentrated/Rhombic/Spiral), BaseMotorConfig fields (but as a single LinearMotorConfig flat struct \u2014 no inheritance in Rust), LinearMotorConfig with derived methods coil_span_m()/travel_m()/pole_pitch_m()/magnet_gap_m()/slot_pitch_m()/min_via_pad_m()/acceleration_force_n()/minimum_drive_force_n(), and result types StackupResult/HeightStackResult/FrictionBudget/PowerBudget with their derived methods (total_height_m, minimum_drive_force_n, etc.). Port magnet_grades.rs fully (get_remanence handles N44H suffixes). units.rs is already mostly done \u2014 add skin_depth_m and cu_resistance_per_length if missing, plus CopperWeight presets. Add #[cfg(test)] unit tests mirroring tests/test_config.py validation cases. Verify with: cargo test -p pcbstatorgen-rs config."
     },
-    "board_width_mapping": {
-      "ui_label": "Active Area Width (mm)",
-      "tooltip": "Width of the active trace area perpendicular to motion where active conductors run to generate Lorentz force."
+    "C": {
+      "target_agent": "general",
+      "title": "Port coil geometry generators to Rust",
+      "status": "done",
+      "blocked_on": [
+        "B"
+      ],
+      "input_files": [
+        "pcbstatorgen/geometry/wave_winding.py",
+        "pcbstatorgen/geometry/coil_generators.py",
+        "tests/test_coil_generators.py",
+        "tests/test_wave_winding.py"
+      ],
+      "output_files": [
+        "crates/pcbstatorgen-rs/src/geometry/mod.rs",
+        "crates/pcbstatorgen-rs/src/geometry/wave_winding.rs",
+        "crates/pcbstatorgen-rs/src/geometry/coil_generators.rs"
+      ],
+      "instructions": "Port CoilSegment (frozen struct with length_m()/midpoint()/is_vertical()/is_horizontal()), PhaseCoil (with polyline/active_segments/end_turn_segments/active_conductor_count/bounding_box/terminal_start/terminal_end/total_length_m/is_continuous/active_conductor_x_positions), WaveWindingGenerator (generate/generate_all_layers/default_phase_layer_map/conductor_x_positions/_generate_phase), SineWaveWindingGenerator, ConcentratedCoilGenerator, RhombicCoilGenerator (with force_factor/conductor_length_factor), SpiralCoilGenerator (_spiral_inward/_spiral_outward/max_turns), make_coil_generator factory. All coords in metres. Port the test suite from tests/test_coil_generators.py to #[cfg(test)]. Verify: cargo test -p pcbstatorgen-rs geometry."
     },
-    "magnet_grade_helper": {
-      "N35": 1.19,
-      "N38": 1.23,
-      "N42": 1.30,
-      "N44H": 1.34,
-      "N48": 1.40,
-      "N52": 1.45
+    "D": {
+      "target_agent": "magnetics-sim-expert",
+      "title": "Physics core: magba adapter + magnet array + Lorentz force evaluator",
+      "status": "pending",
+      "blocked_on": [
+        "B",
+        "C"
+      ],
+      "input_files": [
+        "pcbstatorgen/magnetic/magnet_model.py",
+        "pcbstatorgen/magnetic/coil_model.py",
+        "pcbstatorgen/magnetic/force_eval.py"
+      ],
+      "output_files": [
+        "crates/pcbstatorgen-rs/src/physics/mod.rs",
+        "crates/pcbstatorgen-rs/src/magnetic/mod.rs",
+        "crates/pcbstatorgen-rs/src/magnetic/magnet_model.rs",
+        "crates/pcbstatorgen-rs/src/magnetic/coil_model.rs",
+        "crates/pcbstatorgen-rs/src/magnetic/force_eval.rs"
+      ],
+      "instructions": "Implement physics adapter over magba (CuboidSource wrapper, compute_b_field batch via Rayon). Port MagnetArray (4 arrangements: Alternating, Halbach with X-polarised interleave, back-iron method-of-images with _K_IRON=0.85). Port CoilCurrentModel (active segments \u2192 PathCurrent polylines, meshing param, layer_z_m). Implement Lorentz force natively with nalgebra: F = I * \u03a3(dL_i \u00d7 B_i) (~20 lines), torque \u03c4 = \u03a3(r_i \u00d7 F_i) (~5 lines). Port ForceEvaluator with commutation modes (max_torque sinusoidal FOC, phase_a_only), ripple_pct, Newton's 3rd Law sign flip (F_mover = -F_stator), self-calibration guard (test step +0.1*tau_p, invert phase if F_mover<0). Electrical angle \u03b8_e = 2\u03c0*p/(2\u03c4) + \u03c0. Validate against scripts/fixtures/test_vectors.json (run scripts/export_test_vectors.py first). Verify: cargo test -p pcbstatorgen-rs magnetic."
     },
-    "magnet_pitch_overhaul": {
-      "ui_label": "Gap between magnets (mm)",
-      "dynamic_calculation": "pole_pitch = magnet_width + gap",
-      "minimum_value": 0.0
+    "E": {
+      "target_agent": "general",
+      "title": "Port height stackup + power + friction equations",
+      "status": "done",
+      "blocked_on": [
+        "B",
+        "C"
+      ],
+      "input_files": [
+        "pcbstatorgen/stackup/height_stack.py",
+        "pcbstatorgen/stackup/power.py",
+        "pcbstatorgen/stackup/friction.py"
+      ],
+      "output_files": [
+        "crates/pcbstatorgen-rs/src/stackup/mod.rs",
+        "crates/pcbstatorgen-rs/src/stackup/height_stack.rs",
+        "crates/pcbstatorgen-rs/src/stackup/power.rs",
+        "crates/pcbstatorgen-rs/src/stackup/friction.rs"
+      ],
+      "instructions": "Port HeightStackCalculator (calculate/fits_in_budget/headroom_m/max_air_gap_for_budget/field_sensitivity_per_mm=-\u03c0/\u03c4*1e-3/field_at_gap 1st harmonic formula). Port PowerEstimator (estimate with _trace_params/_single_layer_trace_length_m using WaveWindingGenerator, R_thermal=15 C/W, t_burst=0.1s, droop=10%, v_rated=0.10 m/s). Port FrictionEstimator (BearingType enum, MU_BEARING map, ffc_drag=0.020 N/conductor, wiper=0.055 N, from_config). Port unit tests. Verify: cargo test -p pcbstatorgen-rs stackup."
     },
-    "physics_additions": {
-      "cogging_stator": "0.0 N (Coreless / air-core stator eliminates cogging force completely)",
-      "ripple_percent_formula": "Ripple % = ((F_max - F_min) / F_mean) * 100",
-      "spacing_ratio_options": [
-        "1:1 Standard (Full winding coupling)",
-        "4:5 Vernier Ratio (Cancels 5th harmonic, reduces ripple)",
-        "5:6 Vernier Ratio (Cancels 6th harmonic, reduces ripple)"
-      ]
+    "F": {
+      "target_agent": "magnetics-sim-expert",
+      "title": "Cross-validate Rust physics against Python test vectors",
+      "status": "pending",
+      "blocked_on": [
+        "D",
+        "E"
+      ],
+      "instructions": "Run scripts/export_test_vectors.py to regenerate fixtures. Write Rust integration tests in crates/pcbstatorgen-rs/tests/ that load scripts/fixtures/test_vectors.json and assert: config derived values exact, coil segment counts/lengths \u00b10.1%, B-field \u00b11%, force \u00b12%, ripple \u00b10.5pp. Document any systematic discrepancies. Report back if magba B-field differs from Magpylib beyond tolerance."
+    },
+    "G": {
+      "target_agent": "tauri-interface",
+      "title": "Wire Tauri #[tauri::command] async handlers",
+      "status": "pending",
+      "blocked_on": [
+        "D",
+        "E"
+      ],
+      "output_files": [
+        "app/src-tauri/src/main.rs",
+        "app/src-tauri/src/commands.rs",
+        "app/src/lib/ipc.ts"
+      ],
+      "instructions": "Wire Tauri v2 async command handlers calling pcbstatorgen-rs: compute_config_derived (travel/coil_span/etc), generate_coils (topology + phase count \u2192 CoilPathDto), evaluate_force_sweep (config + coils \u2192 ForceResultDto), compute_height_stack, compute_power_budget, compute_friction. Define serde DTO structs in commands.rs matching the frontend types. Use tauri::async_command with spawn_blocking for heavy sweeps. Update main.rs to invoke tauri::Builder with invoke_handler. Create app/src/lib/ipc.ts with typed invoke() wrappers for the Svelte frontend. Verify: cargo build -p pcbstatorgen-app."
+    },
+    "H": {
+      "target_agent": "svelte-file-editor",
+      "title": "Build Svelte 5 single-dashboard UI",
+      "status": "pending",
+      "blocked_on": [
+        "G"
+      ],
+      "requirements": [
+        "Svelte 5 runes ($state, $derived, $effect)",
+        "Tailwind CSS",
+        "Linear/Radial toggle \u2014 Radial DISABLED with TODO label",
+        "Magnet grade helper dropdown (N35-N52 + Custom) auto-syncing Br",
+        "Vernier spacing ratio dropdown (1:1, 4:5, 5:6)",
+        "Ripple % metric display",
+        "Interactive stator/mover/travel diagram (PRODUCT_GOALS.md \u00a73.A): fixed stator bar + sliding mover bar + travel zone, updates in real-time as active_area/magnet_count/magnet_width/gap change",
+        "SVG coil preview rendering active vs end-turn segments",
+        "Live metrics panel: mean/peak/min thrust, ripple%, height stack, power budget, friction breakdown"
+      ],
+      "instructions": "Build App.svelte as the single dashboard. Use @tauri-apps/api invoke() to call backend commands. Throttle slider input with a 150ms debounce before invoking heavy physics. All component files (.svelte/.svelte.ts) MUST go through the svelte-code-writer skill and svelte-autofixer tool."
     }
   },
-  "execution_steps": [
-    {
-      "step_id": 1,
-      "file": "gui/streamlit_app.py",
-      "action": "Remove wizard mode. Convert UI into a single state-contained Advanced Dashboard with sidebar toggles and collapsibles."
-    },
-    {
-      "step_id": 2,
-      "file": "gui/streamlit_app.py",
-      "action": "Implement the Linear vs. Radial (Rotary) high-level toggle that dynamically swaps variables and terminology."
-    },
-    {
-      "step_id": 3,
-      "file": "gui/streamlit_app.py",
-      "action": "Refactor Travel, Board Width, Magnet Grade, and Magnet Gap controls according to mathematical specifications."
-    },
-    {
-      "step_id": 4,
-      "file": "gui/streamlit_app.py",
-      "action": "Integrate zero-cogging explanation, live force ripple computation, and the Spacing Ratio dropdown into physics feedback panels."
-    },
-    {
-      "step_id": 5,
-      "file": "pcbstatorgen/config.py",
-      "action": "Update default or derived property methods if necessary to reflect the updated configurations cleanly."
-    }
+  "critical_path": [
+    "B",
+    "C",
+    "D",
+    "F",
+    "G",
+    "H"
+  ],
+  "parallelizable": [
+    [
+      "B",
+      "C-after-B"
+    ],
+    [
+      "D",
+      "E"
+    ],
+    [
+      "F",
+      "G"
+    ],
+    [
+      "H"
+    ]
   ]
 }
