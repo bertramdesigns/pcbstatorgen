@@ -13,7 +13,7 @@ Class hierarchy
     Shared parameters for every PCB motor topology (magnetics, drive
     electronics, PCB manufacturing rules).
 
-    :class:`LinearMotorConfig` ← **use this for flying fader / linear motors**
+    :class:`LinearMotorConfig` ← **use this for flying mover / linear motors**
         Adds travel, board width, friction, and force targets.
         Aliased as :data:`MotorConfig` for backwards compatibility.
 
@@ -42,7 +42,7 @@ Result dataclasses
 
 Example
 -------
-Build a configuration for a 75 mm studio fader::
+Build a configuration for a 75 mm studio mover::
 
     from pcbstatorgen.config import LinearMotorConfig
     from pcbstatorgen.units import mm, mils_to_m
@@ -148,6 +148,9 @@ class CoilTopology(Enum):
     """Continuous zigzag wave winding.  Highest fill factor.
     Recommended for production linear motors."""
 
+    SINE_WAVE = "sine_wave"
+    """Continuous sinusoidal wave winding.  Naturally smooth field coupling and low ripple."""
+
     CONCENTRATED = "concentrated"
     """Individual rectangular coil loops, one per pole pair per phase.
     Simple to route and understand.  Good for prototypes."""
@@ -180,7 +183,7 @@ class BaseMotorConfig:
     """Shared parameters for all PCB motor topologies.
 
     Do not instantiate directly — use :class:`LinearMotorConfig` (for
-    flying faders / linear stages) or :class:`AxialMotorConfig` (for future
+    flying movers / linear stages) or :class:`AxialMotorConfig` (for future
     disk-stator rotary motors).
 
     All length fields are in **metres**, flux density in **Tesla**, current in
@@ -239,7 +242,7 @@ class BaseMotorConfig:
         Must be even.  Default: 12.
     drive_frequency_hz:
         Nominal electrical drive frequency at rated speed [Hz].  Used for
-        skin-depth calculations.  For a fader at 0.1 m/s with 12 mm pole
+        skin-depth calculations.  For a mover at 0.1 m/s with 12 mm pole
         pitch: f ≈ 8 Hz; use 500 Hz as a conservative PWM-harmonic bound.
         Default: 500 Hz.
     max_temperature_rise_c:
@@ -278,6 +281,9 @@ class BaseMotorConfig:
     phases: int = 3
     """Number of electrical phases."""
 
+    spacing_ratio: float = 1.0
+    """Vernier slot pitch spacing ratio.  1.0 = Standard 1:1, < 1.0 = fractional slot spacing."""
+
     max_current_a: float = 1.0
     """Peak phase current [A]."""
 
@@ -315,6 +321,11 @@ class BaseMotorConfig:
     def __post_init__(self) -> None:
         self._validate_base()
 
+    @property
+    def magnet_gap_m(self) -> float:
+        """Gap between adjacent magnets along the travel axis [m]."""
+        return self.magnet_pitch_m - self.magnet_dims_m[0]
+
     def _validate_base(self) -> None:
         """Validate fields common to all motor topologies."""
         if len(self.magnet_dims_m) != 3:
@@ -345,6 +356,8 @@ class BaseMotorConfig:
             )
         if self.phases < 1:
             raise ValueError(f"phases must be ≥ 1, got {self.phases}")
+        if self.spacing_ratio <= 0.0 or self.spacing_ratio > 2.0:
+            raise ValueError(f"spacing_ratio must be in (0.0, 2.0], got {self.spacing_ratio}")
         if self.max_current_a <= 0:
             raise ValueError(f"max_current_a must be positive, got {self.max_current_a}")
         if self.supply_voltage_v <= 0:
@@ -389,8 +402,8 @@ class BaseMotorConfig:
 
     @property
     def slot_pitch_m(self) -> float:
-        """Coil slot pitch = pole_pitch / phases [m]."""
-        return self.pole_pitch_m / self.phases
+        """Coil slot pitch = (pole_pitch / phases) * spacing_ratio [m]."""
+        return (self.pole_pitch_m / self.phases) * self.spacing_ratio
 
     @property
     def min_via_pad_m(self) -> float:
@@ -405,7 +418,7 @@ class BaseMotorConfig:
 
 @dataclass(kw_only=True)
 class LinearMotorConfig(BaseMotorConfig):
-    """Configuration for a **linear** PCB coreless motor (flying fader).
+    """Configuration for a **linear** PCB coreless motor (flying mover).
 
     Extends :class:`BaseMotorConfig` with travel geometry, board dimensions,
     friction budget, and separate continuous / burst force targets.
@@ -413,7 +426,7 @@ class LinearMotorConfig(BaseMotorConfig):
     Parameters
     ----------
     travel_m:
-        Total fader travel range [m].  Typical: 60–100 mm.
+        Total mover travel range [m].  Typical: 60–100 mm.
     board_width_m:
         PCB width perpendicular to the travel axis [m].  Constrains coil
         winding depth.  Default: 20 mm.
@@ -429,7 +442,7 @@ class LinearMotorConfig(BaseMotorConfig):
         ``target_force_n``.  The burst is short-duration (< 200 ms) and can
         be sourced from a capacitor bank.  Default: 1.0 N.
     friction_n:
-        Estimated total mechanical friction of the fader assembly [N].
+        Estimated total mechanical friction of the mover assembly [N].
         Includes bearing friction, cable drag, and (if applicable) wiper
         contact spring force.  Used by :class:`FrictionBudget` and the
         LayerOptimizer to compute the *minimum drive force* = friction ×
@@ -647,11 +660,94 @@ class AxialMotorConfig(BaseMotorConfig):
     magnet_skew_deg: float = 0.0
 
     def __post_init__(self) -> None:
-        raise NotImplementedError(
-            "AxialMotorConfig is not yet implemented.  "
-            "See the TODO block in this class docstring and "
-            "GitHub Issue #axial-motor for the full implementation checklist."
-        )
+        super().__post_init__()   # runs _validate_base()
+        self._validate_axial()
+
+    def _validate_axial(self) -> None:
+        """Validate fields specific to axial flux motors."""
+        if self.stator_OD_m <= 0:
+            raise ValueError(f"stator_OD_m must be positive, got {self.stator_OD_m}")
+        if self.stator_ID_m <= 0:
+            raise ValueError(f"stator_ID_m must be positive, got {self.stator_ID_m}")
+        if self.stator_ID_m >= self.stator_OD_m:
+            raise ValueError(
+                f"stator_ID_m ({self.stator_ID_m * 1e3:.1f} mm) must be < "
+                f"stator_OD_m ({self.stator_OD_m * 1e3:.1f} mm)"
+            )
+        if self.rated_speed_rpm <= 0:
+            raise ValueError(f"rated_speed_rpm must be positive, got {self.rated_speed_rpm}")
+        if self.target_torque_nm <= 0:
+            raise ValueError(f"target_torque_nm must be positive, got {self.target_torque_nm}")
+        if self.peak_torque_nm < self.target_torque_nm:
+            raise ValueError(
+                f"peak_torque_nm ({self.peak_torque_nm:.3f} N·m) must be ≥ "
+                f"target_torque_nm ({self.target_torque_nm:.3f} N·m)"
+            )
+
+    @property
+    def mean_radius_m(self) -> float:
+        """Mean radius of the stator active region [m]."""
+        return (self.stator_OD_m + self.stator_ID_m) / 4.0
+
+    @property
+    def board_width_m(self) -> float:
+        """Stator active cross-width [m]."""
+        return (self.stator_OD_m - self.stator_ID_m) / 2.0
+
+    @property
+    def travel_m(self) -> float:
+        """Equivalent linear travel range corresponding to one full rotation [m]."""
+        return 2.0 * math.pi * self.mean_radius_m
+
+    @property
+    def pcb_thickness_m(self) -> float:
+        """Standard PCB substrate thickness [m]."""
+        return 0.0016
+
+    @property
+    def target_force_n(self) -> float:
+        """Equivalent continuous force target evaluated at the mean radius [N]."""
+        return self.target_torque_nm / self.mean_radius_m
+
+    @property
+    def peak_force_n(self) -> float:
+        """Equivalent peak force target evaluated at the mean radius [N]."""
+        return self.peak_torque_nm / self.mean_radius_m
+
+    @property
+    def active_length_m(self) -> float:
+        """Active length of the stator circumferential path [m]."""
+        return 2.0 * math.pi * self.mean_radius_m
+
+    @property
+    def friction_n(self) -> float:
+        """Equivalent linear friction force evaluated at the mean radius [N]."""
+        return 0.005 / self.mean_radius_m
+
+    @property
+    def carriage_mass_kg(self) -> float:
+        """Equivalent translational mass of the rotor carriage [kg]."""
+        return self.rotor_inertia_kgm2 / (self.mean_radius_m ** 2)
+
+    @property
+    def max_accel_m_s2(self) -> float:
+        """Equivalent linear peak acceleration [m/s²]."""
+        return 2.0
+
+    def summary(self) -> str:
+        """Return a compact human-readable summary of key parameters."""
+        lines = [
+            f"AxialMotorConfig ({self.name or 'unnamed'}):",
+            f"  Outer / Inner diameter: {self.stator_OD_m * 1e3:.1f} / {self.stator_ID_m * 1e3:.1f} mm",
+            f"  Mean radius:           {self.mean_radius_m * 1e3:.1f} mm",
+            f"  Target holding torque: {self.target_torque_nm * 1e3:.1f} mN·m",
+            f"  Peak holding torque:   {self.peak_torque_nm * 1e3:.1f} mN·m",
+            f"  Rated speed:           {self.rated_speed_rpm:.0f} RPM",
+            f"  Coil topology:         {self.coil_topology.value}",
+            f"  Magnet array:          {self.magnet_arrangement.name} ({self.magnet_count} poles)",
+            f"  Air gap clearance:     {self.air_gap_m * 1e3:.2f} mm",
+        ]
+        return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -892,7 +988,7 @@ class HeightStackResult:
 
 @dataclass
 class FrictionBudget:
-    """Breakdown of mechanical friction contributors in the fader assembly.
+    """Breakdown of mechanical friction contributors in the mover assembly.
 
     The dominant contributor is usually bearing friction driven by the
     magnetic normal (pull-in) force:
