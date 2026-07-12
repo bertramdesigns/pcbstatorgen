@@ -47,7 +47,7 @@ def alt_config(default_config) -> LinearMotorConfig:
 @pytest.fixture
 def halbach_config(default_config) -> LinearMotorConfig:
     return LinearMotorConfig(
-        travel_m=default_config.travel_m,
+        active_area_length_m=default_config.active_area_length_m,
         magnet_dims_m=default_config.magnet_dims_m,
         magnet_count=default_config.magnet_count,
         magnet_pitch_m=default_config.magnet_pitch_m,
@@ -58,7 +58,7 @@ def halbach_config(default_config) -> LinearMotorConfig:
 @pytest.fixture
 def back_iron_config(default_config) -> LinearMotorConfig:
     return LinearMotorConfig(
-        travel_m=default_config.travel_m,
+        active_area_length_m=default_config.active_area_length_m,
         magnet_dims_m=default_config.magnet_dims_m,
         magnet_count=default_config.magnet_count,
         magnet_pitch_m=default_config.magnet_pitch_m,
@@ -70,7 +70,7 @@ def back_iron_config(default_config) -> LinearMotorConfig:
 @pytest.fixture
 def halbach_back_iron_config(default_config) -> LinearMotorConfig:
     return LinearMotorConfig(
-        travel_m=default_config.travel_m,
+        active_area_length_m=default_config.active_area_length_m,
         magnet_dims_m=default_config.magnet_dims_m,
         magnet_count=default_config.magnet_count,
         magnet_pitch_m=default_config.magnet_pitch_m,
@@ -302,7 +302,7 @@ class TestFrictionEstimator:
 
     def test_estimate_for_config_total_matches(self, alt_config):
         alt_config_with_friction = LinearMotorConfig(
-            travel_m=alt_config.travel_m,
+            active_area_length_m=alt_config.active_area_length_m,
             magnet_dims_m=alt_config.magnet_dims_m,
             friction_n=0.1,
         )
@@ -312,7 +312,7 @@ class TestFrictionEstimator:
 
     def test_estimate_for_config_zero_friction(self, alt_config):
         cfg_zero = LinearMotorConfig(
-            travel_m=alt_config.travel_m,
+            active_area_length_m=alt_config.active_area_length_m,
             magnet_dims_m=alt_config.magnet_dims_m,
             friction_n=0.0,
         )
@@ -364,7 +364,7 @@ class TestPowerEstimator:
 
     def test_higher_current_higher_power(self, alt_config):
         cfg_high = LinearMotorConfig(
-            travel_m=alt_config.travel_m,
+            active_area_length_m=alt_config.active_area_length_m,
             magnet_dims_m=alt_config.magnet_dims_m,
             max_current_a=2.0,
         )
@@ -460,7 +460,7 @@ class TestHeightStackCalculator:
         budget = mm(8)
         max_gap = calc.max_air_gap_for_budget(alt_config, budget)
         cfg_at_limit = LinearMotorConfig(
-            travel_m=alt_config.travel_m,
+            active_area_length_m=alt_config.active_area_length_m,
             magnet_dims_m=alt_config.magnet_dims_m,
             air_gap_m=max_gap,
         )

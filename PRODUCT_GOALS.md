@@ -25,21 +25,26 @@ To maximize usability and streamline the design loop, the multi-step Wizard has 
 2.  **Dual-Fidelity Solvers**: Instant analytical approximations ($< 2\text{ms}$) coupled with an explicit, high-fidelity 3D Biot-Savart / Magpylib sweep on command.
 3.  **Clean Separation of Concerns**: A high-level toggle between **Linear Motor** and **Radial (Rotary) Motor** cleanly shifts all UI labels, parameter scopes, and mathematical terminology.
 
+    > ⚠️ **Radial (Rotary) mode is NOT YET IMPLEMENTED (Phase 4).**
+    > `AxialMotorConfig` exists as a design stub — it has no geometry generation, no radial coil patterns, and no torque sweep. The Linear/Radial toggle is **disabled** in the UI and clearly labelled `TODO / not-yet-implemented`. Do NOT attempt to implement radial geometry in Phase 4. See [Section 7 — Deferred Scope](#7-deferred-scope--todo) for the full TODO list.
+
 ```
                   ┌──────────────────────────────────────────┐
                   │          TOPOLOGY WORKFLOW SELECTOR      │
-                  │   [⬤ Linear Motion]   [◯ Radial Motion]  │
+                  │   [⬤ Linear Motion]   [◯ Radial — TODO] │
                   └────────────────────┬─────────────────────┘
-                                       │
+                                       │ (linear only — radial disabled)
             ┌──────────────────────────┴──────────────────────────┐
-            ▼                                                     ▼
+            ▼                                                      ▼
 ┌───────────────────────────────────────┐             ┌───────────────────────────────────────┐
-│        LINEAR ACTUATOR WORKFLOW       │             │         RADIAL MOTOR WORKFLOW         │
+│        LINEAR ACTUATOR WORKFLOW       │             │      RADIAL MOTOR WORKFLOW (TODO)     │
+│        (FULLY IMPLEMENTED)             │             │      AxialMotorConfig = stub          │
 ├───────────────────────────────────────┤             ├───────────────────────────────────────┤
-│ • Center-to-Center Travel (mm)        │             │ • Outer / Inner Diameter (mm)         │
-│ • Active Area Width (mm)              │             │ • Radial Active Width (mm)            │
-│ • Cartesian Coordinates [X, Y, Z]     │             │ • Polar Coordinates [θ, r, z]          │
-│ • Straight Serpentine End-Turns       │             │ • Conformal Polar Projection End-Arcs │
+│ • Active Area Length (mm) — INPUT     │             │ • Outer / Inner Diameter (mm)         │
+│ • Center-to-Center Travel — DERIVED    │             │ • Radial Active Width (mm)            │
+│ • Active Area Width (mm)              │             │ • Polar Coordinates [θ, r, z]          │
+│ • Cartesian Coordinates [X, Y, Z]     │             │ • Conformal Polar Projection End-Arcs │
+│ • Straight Serpentine End-Turns        │             │ • SpiralCoilGenerator — unimplemented │
 └───────────────────────────────────────┘             └───────────────────────────────────────┘
 ```
 
@@ -49,12 +54,33 @@ To maximize usability and streamline the design loop, the multi-step Wizard has 
 
 The UI parameters have been overhauled to align perfectly with physical reality and standard electromagnetic machine design notation.
 
-### A. Center-to-Center Travel ($L_{\text{travel, c2c}}$) & Active Zone Length ($L_{\text{active}}$)
-Rather than a vague "Travel Distance" parameter, we define **Center-to-Center Travel** ($L_{\text{travel, c2c}}$), which represents the physical displacement of the mover's reference center point. This is mathematically related to the **Active Zone Length** ($L_{\text{active}}$) on the PCB stator (the physical region spanned by the stator traces) by:
-$$L_{\text{active}} = L_{\text{travel, c2c}} + \text{coil\_span}$$
-where:
-*   $\text{coil\_span}$ is the physical horizontal span of a single active stator coil assembly.
-*   This relationship ensures that the mover remains fully coupled to active stator coils across its entire stroke range, preventing sudden drops in force output at the travel limits.
+### A. Active Area Length ($L_{\text{active}}$, INPUT) → Center-to-Center Travel ($L_{\text{travel, c2c}}$, DERIVED)
+
+> ⚠️ **Direction corrected (Phase 4).** The previous design had `travel` as a primary input and `active_length` as a derived output. This was **backwards from physical reality**. The user's actual workflow is:
+> 1. Define the **active area for the PCB traces** (stator track length) — this is the physical board constraint.
+> 2. Define the **magnet array** (magnet count + dimensions + gap → `coil_span` / mover length).
+> 3. The **center-to-center travel** is then **calculated as a result**.
+
+The **Active Zone Length** ($L_{\text{active}}$) is the physical region spanned by the stator traces on the PCB — this is the **primary INPUT** because it is constrained by the physical board the user can manufacture.
+
+The **Center-to-Center Travel** ($L_{\text{travel, c2c}}$) represents the physical displacement of the mover's reference center point. This is a **DERIVED / READ-ONLY** value — the usable stroke that results from the board minus the mover:
+
+$$L_{\text{travel, c2c}} = L_{\text{active}} - \text{coil\_span}$$
+
+where $\text{coil\_span} = N_{\text{magnets}} \times \tau_p$ is the full span of the mover's magnet array ($N_{\text{magnets}}$ magnets × pole pitch $\tau_p$).
+
+The UI must make this relationship immediately obvious:
+> *"Your stator track is $L_{\text{active}}$ mm long, your mover array is $\text{coil\_span}$ mm long, so you get $L_{\text{travel, c2c}}$ mm of usable travel."*
+
+This relationship ensures that the mover remains fully coupled to active stator coils across its entire stroke range, preventing sudden drops in force output at the travel limits. If the user reduces the active area below the coil span, the travel goes to zero or negative — the UI must validate and warn: *"Active area must be longer than the mover array (coil span = X mm)."*
+
+#### Phase 6 (Svelte) Visual Illustration Requirement
+The future Svelte UI (Phase 6) **must** include an interactive visual diagram illustrating this relationship:
+- The **stator track** (PCB) rendered as a fixed-length horizontal bar labelled with $L_{\text{active}}$.
+- The **mover** (magnet array) rendered as a shorter bar that slides along the stator, labelled with $\text{coil\_span}$.
+- The **travel range** highlighted as the difference zone at both ends, labelled with $L_{\text{travel, c2c}}$.
+- The diagram must update in real-time as the user drags any of: active area length, magnet count, magnet width, or magnet gap.
+- Goal: make the identity $\text{travel} = \text{stator\_length} - \text{mover\_length}$ visually self-evident.
 
 ### B. Active Area Width ($W_{\text{active}}$)
 "Board width" has been renamed to **Active Area Width** ($W_{\text{active}}$). 
@@ -150,3 +176,25 @@ The application will be a **pure Rust** native desktop application built on **Ta
 - **Tauri Multi-Process**: Rust core with lightweight WebView frontend. UI state isolated in Svelte at 60 FPS; async command handlers (`#[tauri::command]`) offload computation to separate threads.
 - **Zero Python dependency**: No PyInstaller, no JSON-RPC socket overhead, no serialization boundary. Single compiled binary (~15 MB). Native Rayon multi-threading.
 - **KiCad 10 IPC**: The Rust core communicates with KiCad via Unix domain sockets directly, or via a minimal `kipy`-protocol shim. No Python translation layer needed.
+
+---
+
+## 7. Deferred Scope & TODO
+
+The following features are explicitly **out of scope for the current phase** and tracked here to prevent accidental implementation.
+
+### A. Radial / Axial-Flux Rotary Motor Mode — DEFERRED
+`AxialMotorConfig` exists in `pcbstatorgen/config.py` as a design stub. It is **instantiable** (validates stator OD/ID, torque targets) but has **no functional geometry, physics, or torque sweep**. The following work is required before it can be used:
+
+1. `SpiralCoilGenerator` — the natural coil topology for disk stators (in-out layer-pair winding).
+2. Annular geometry in `WaveWindingGenerator` / `SpiralCoilGenerator` — conductors must follow circular arcs, not straight lines.
+3. `MagnetArray` updated to arrange Cuboid magnets in a ring at the correct radial positions, not a linear array.
+4. `ForceEvaluator` updated to compute **torque** [N·m] instead of linear force [N]; uses `magpy.getFT()` with a rotational pivot.
+5. `LayerOptimizer` constraints adapted for disk geometry (annular area, circumferential slot pitch at mean radius).
+6. KiCad writer updated to emit a circular board outline.
+7. `HeightStackResult` extended for the dual-sided axial flux gap.
+
+**Phase 4 UI handling**: The Linear/Radial toggle is **disabled** (greyed out or rendered as a non-clickable `TODO` label). No radial parameter inputs are exposed. Attempting to select radial mode is a no-op with an informational message: *"Radial (axial-flux) motor mode is not yet implemented. Tracked for a future phase."*
+
+### B. Config Refactor: `active_area_length_m` as Stored Field — COMPLETED IN PHASE 4
+The config refactor was completed in Phase 4 (not deferred to Phase 5). `LinearMotorConfig` now stores `active_area_length_m` as the primary input field, and `travel_m` is a **derived `@property`**: `active_area_length_m - coil_span_m`. The `active_length_m` property returns `active_area_length_m` directly. All tests, scripts, and serialization have been updated. The serialization layer accepts both new (`active_area_length_m`) and legacy (`travel_m`) JSON keys for backwards compatibility.

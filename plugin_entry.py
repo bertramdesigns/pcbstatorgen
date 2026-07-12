@@ -78,7 +78,7 @@ from pcbstatorgen.units import mm, mils_to_m
 
 DEFAULT_CONFIG = MotorConfig(
     name="flying-fader-v1",
-    travel_m=mm(75),
+    active_area_length_m=mm(195),
     # 10 mm × 10 mm × 4 mm N44H magnets (width × cross-width × height)
     magnet_dims_m=(mm(10), mm(10), mm(4)),
     magnet_count=10,
