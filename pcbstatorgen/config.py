@@ -199,8 +199,8 @@ class BaseMotorConfig:
         alternating-pole arrangement.  Default: 10.
     magnet_pitch_m:
         Centre-to-centre magnet spacing along the travel axis [m].  Equals
-        one pole pitch.  Must be ≥ ``magnet_dims_m[0] + 0.3 mm`` for assembly
-        clearance.  Default: 12 mm.
+        one pole pitch.  Must be ≥ ``magnet_dims_m[0]`` — a gap of 0 mm is
+        valid (edge-to-edge magnets).  Default: 12 mm.
     magnet_remanence_t:
         Remnant flux density **Br** at operating temperature [T].
         N44H at 20 °C: 1.32–1.38 T.  Default: 1.35 T.
@@ -329,15 +329,15 @@ class BaseMotorConfig:
             )
         if self.magnet_pitch_m <= 0:
             raise ValueError(f"magnet_pitch_m must be positive, got {self.magnet_pitch_m}")
-        # Assembly gap: at least 0.3 mm clearance between adjacent magnets.
-        # Tolerance of 1e-10 m (~0.1 pm) absorbs float representation of mm(0.3).
+        # Check magnets do not physically overlap (pitch must be ≥ magnet width).
+        # A gap of exactly 0 (edge-to-edge) is valid; only a negative gap is rejected.
         assembly_gap_m = self.magnet_pitch_m - self.magnet_dims_m[0]
-        if assembly_gap_m < mm(0.3) - 1e-10:
+        if assembly_gap_m < -1e-9:
             raise ValueError(
-                f"magnet_pitch_m ({self.magnet_pitch_m * 1e3:.2f} mm) too close to "
-                f"magnet width ({self.magnet_dims_m[0] * 1e3:.2f} mm) — "
-                f"inter-magnet assembly gap must be ≥ 0.3 mm "
-                f"(current gap: {assembly_gap_m * 1e3:.2f} mm)"
+                f"magnet_pitch_m ({self.magnet_pitch_m * 1e3:.3f} mm) is smaller than "
+                f"magnet width ({self.magnet_dims_m[0] * 1e3:.3f} mm) — "
+                f"magnets cannot overlap (gap: {assembly_gap_m * 1e3:.3f} mm). "
+                f"A gap of 0 mm (edge-to-edge) is the minimum allowed."
             )
         if self.magnet_remanence_t <= 0 or self.magnet_remanence_t > 2.5:
             raise ValueError(
