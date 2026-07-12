@@ -33,7 +33,7 @@ def cfg(default_config) -> LinearMotorConfig:
 def small_cfg() -> LinearMotorConfig:
     """Reduced config for fast spiral tests."""
     return LinearMotorConfig(
-        travel_m=mm(24),
+        active_area_length_m=mm(72),
         magnet_dims_m=(mm(10), mm(10), mm(4)),
         magnet_count=4,
         magnet_pitch_m=mm(12),
@@ -363,12 +363,12 @@ class TestSpiralConstruction:
     def test_max_turns_increases_with_larger_area(self, cfg):
         """Wider board → more room → more turns."""
         cfg_narrow = LinearMotorConfig(
-            travel_m=cfg.travel_m,
+            active_area_length_m=cfg.active_area_length_m,
             magnet_dims_m=cfg.magnet_dims_m,
             board_width_m=mm(10),
         )
         cfg_wide = LinearMotorConfig(
-            travel_m=cfg.travel_m,
+            active_area_length_m=cfg.active_area_length_m,
             magnet_dims_m=cfg.magnet_dims_m,
             board_width_m=mm(30),
         )

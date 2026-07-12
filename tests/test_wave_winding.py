@@ -32,7 +32,7 @@ def gen() -> WaveWindingGenerator:
 def tiny_config() -> MotorConfig:
     """2-magnet, 1-phase, minimal config for easy hand-calculation."""
     return MotorConfig(
-        travel_m=mm(24),
+        active_area_length_m=mm(48),
         magnet_dims_m=(mm(10), mm(10), mm(4)),
         magnet_count=2,
         magnet_pitch_m=mm(12),
@@ -276,10 +276,10 @@ class TestGenerateSingleLayer:
         This verifies the generator handles sparse windings correctly.
         """
         cfg = MotorConfig(
-            travel_m=mm(1),
+            active_area_length_m=mm(101),
             magnet_dims_m=(mm(10), mm(10), mm(4)),
             magnet_count=2,
-            magnet_pitch_m=mm(50),  # large → active_length = 1 + 100 = 101 mm
+            magnet_pitch_m=mm(50),  # large → active_length = 101 mm
             phases=1,
             target_force_n=0.1,
             max_current_a=1.0,

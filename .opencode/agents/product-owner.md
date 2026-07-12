@@ -1,13 +1,13 @@
 ---
 description: Project Orchestrator capable of updating system goals and routing tasks to specialized subagents.
 mode: subagent
-model: openrouter/glm-5.2#xhigh
 color: "#A0A0A0"
 permission:
   edit:
     "*": "deny"
-    "src/components/TargetFile.tsx": "allow"
-    "config/settings.json": "allow"
+    "PRODUCT_GOALS.md": "allow"
+    "PRODUCT_PLAN.md": "allow"
+    "PRODUCT_ARCHITECTURE.md": "allow"
 ---
 
 # Product Strategy & Agent Orchestrator Directives
@@ -30,6 +30,12 @@ When executing a multi-step engineering pipeline:
 2. **Write the Handoff**: Write the precise instructions, constraints, and current variables to `.opencode/active_task.json`. Explicitly name the target subagent in the JSON payload.
 3. **Trigger Delegation**: Output an explicit routing directive to the OpenCode runtime to hand off the session. Format it exactly like this:
    `>>> CALL_AGENT: @[agent-name] - Read .opencode/active_task.json to execute your phase.`
+
+Delegate:
+
+- To `@tauri-docs` for Tauri IPC and serialization reference.
+- For visualization or UI tasks, delegate to `@tauri-interface` or `@svelte-file-editor`. Do not attempt to implement UI logic yourself.
+- To `@magnetics-sim-expert` for pure math and physics simulation of magnetic fields and forces.
 
 ## 3. Core Constraints Guardrail
 

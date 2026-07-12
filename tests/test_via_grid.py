@@ -366,7 +366,7 @@ class TestEndTurnRouter:
     def test_effective_via_region_narrow_board(self, default_config):
         """For a narrow board, via region must be clamped to board_width/4."""
         narrow = MotorConfig(
-            travel_m=mm(75),
+            active_area_length_m=mm(195),
             magnet_dims_m=(mm(10), mm(10), mm(4)),
             magnet_count=10,
             magnet_pitch_m=mm(12),
