@@ -23,7 +23,7 @@ This document contains the implementation roadmap, architectural feasibility stu
 └──────────────────────────┬─────────────────────────────┘
                            ▼
 ┌────────────────────────────────────────────────────────┐
-│  PHASE 4: SINGLE-DASHBOARD UI OVERHAUL         (NEXT)  │
+│  PHASE 4: SINGLE-DASHBOARD UI OVERHAUL         (DONE)  │
 │  - Wizard removal, advanced dashboard consolidation,   │
 │    travel and board width fixes, magnet helpers,       │
 │    spacing ratios/Vernier dropdown, ripple calculations.│
@@ -34,15 +34,17 @@ This document contains the implementation roadmap, architectural feasibility stu
 └──────────────────────────┬─────────────────────────────┘
                            ▼
 ┌────────────────────────────────────────────────────────┐
-│  PHASE 5: Rust Physics Core (magba + nalgebra)         │
+│  PHASE 5: Rust Physics Core (magba + nalgebra) IN-PROG │
+│  - Branch: feat/phase5-6-rust-tauri (combined w/ P6)    │
+│  - Workspace scaffolded: crates/pcbstatorgen-rs + app/  │
 │  - Port config structs, coil generators to Rust         │
 │  - Implement B-field via magba, Lorentz force natively │
-│  - Validate against Python test vectors                 │
+│  - Validate against Python test vectors (scripts/fix.)  │
 └──────────────────────────┬─────────────────────────────┘
                            ▼
 ┌────────────────────────────────────────────────────────┐
-│  PHASE 6: Tauri + Svelte Desktop Application            │
-│  - Tauri shell, Svelte dashboard, Tailwind CSS          │
+│  PHASE 6: Tauri + Svelte Desktop Application IN-PROGRESS│
+│  - Tauri v2 + Svelte 5 + Vite + Tailwind scaffolded    │
 │  - Async physics commands, Chromium DevTools            │
 │  - Linear toggle ONLY (Radial still TODO)               │
 │  - Live metrics, SVG previews                           │
@@ -64,27 +66,31 @@ This document contains the implementation roadmap, architectural feasibility stu
 ## 2. Physics Engine: Pure Rust with magba
 
 ### Decision
+
 All magnetic field, force, and torque computation will be implemented natively in Rust. No Python runtime or sidecar is required.
 
 ### Key Crates
-| Crate | Version | Role |
-|---|---|---|
-| **magba** | 0.6.2 | Analytical B-field from CuboidMagnet, PathCurrent, source collections (validated against Magpylib) |
-| **nalgebra** | 0.33+ | Vector cross-products, quaternions for magnet orientation |
-| **rayon** | 1.10+ | Data-parallel field sampling across observation points |
-| **cfsem** (optional) | 11.2 | Advanced Biot-Savart filament modeling, eddy-current body forces |
-| **serde** / **serde_json** | 1.0 | Config serialization for Tauri IPC |
+
+| Crate                      | Version | Role                                                                                               |
+| -------------------------- | ------- | -------------------------------------------------------------------------------------------------- |
+| **magba**                  | 0.6.2   | Analytical B-field from CuboidMagnet, PathCurrent, source collections (validated against Magpylib) |
+| **nalgebra**               | 0.33+   | Vector cross-products, quaternions for magnet orientation                                          |
+| **rayon**                  | 1.10+   | Data-parallel field sampling across observation points                                             |
+| **cfsem** (optional)       | 11.2    | Advanced Biot-Savart filament modeling, eddy-current body forces                                   |
+| **serde** / **serde_json** | 1.0     | Config serialization for Tauri IPC                                                                 |
 
 ### What Magpylib Provided vs. Rust Replacement
-| Magpylib (Python) | Rust Equivalent |
-|---|---|
-| `magpy.magnet.Cuboid(polarization, position, dimension)` | `magba::magnet::CuboidMagnet::new(pos, quaternion, polarization_T, dims)` |
-| `magpy.Collection(*magnets)` | `magba::sources!(m1, m2, ...)` → `SourceAssembly` |
-| `magpy.getB(collection, observers)` | `assembly.compute_B_batch(&points)` (Rayon-parallel) |
-| `magpy.current.Polyline(current, vertices, meshing)` | `magba::currents::PathCurrent` |
-| `magpy.getFT(magnets, polylines)` — force + torque | Sample B along segments, then `F = I · Σ(dLᵢ × Bᵢ)`, `τ = Σ(rᵢ × Fᵢ)` (~20 lines) |
+
+| Magpylib (Python)                                        | Rust Equivalent                                                                   |
+| -------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| `magpy.magnet.Cuboid(polarization, position, dimension)` | `magba::magnet::CuboidMagnet::new(pos, quaternion, polarization_T, dims)`         |
+| `magpy.Collection(*magnets)`                             | `magba::sources!(m1, m2, ...)` → `SourceAssembly`                                 |
+| `magpy.getB(collection, observers)`                      | `assembly.compute_B_batch(&points)` (Rayon-parallel)                              |
+| `magpy.current.Polyline(current, vertices, meshing)`     | `magba::currents::PathCurrent`                                                    |
+| `magpy.getFT(magnets, polylines)` — force + torque       | Sample B along segments, then `F = I · Σ(dLᵢ × Bᵢ)`, `τ = Σ(rᵢ × Fᵢ)` (~20 lines) |
 
 ### Risks & Mitigations
+
 - **magba is young** (1 contributor, 2 GitHub stars, pre-1.0): Pin version (`=0.6.2`), vendor/fork if long-term stability is needed.
 - **No ready-made Lorentz-force API**: The integration loop is trivial (sample B, cross-product, sum). The hard part (closed-form cuboid B-field) is solved by magba.
 - **Magba API may change**: Write a thin adapter layer (`pcbstatorgen-rs::physics`) so upstream code is insulated from magba API breaks.
@@ -94,11 +100,13 @@ All magnetic field, force, and torque computation will be implemented natively i
 ## 3. Streamlit vs. Tauri Feasibility Study (Historical Reference)
 
 ### A. Why Streamlit Was Replaced
+
 1. **Stateless Execution Bottleneck**: Full script re-run on every widget interaction; severe state-synchronization bugs, page flashes, lost input focus.
 2. **No Fine-Grained Reactivity**: Sub-state updates, slider throttling, and interactive animations were near-impossible.
 3. **Debugging Limitations**: No standard DevTools; print-statement debugging clashed with rerun loop.
 
 ### B. Tauri + Svelte Resolution
+
 - **Multi-Process**: Rust core + lightweight WebView frontend. UI state in Svelte at 60 FPS.
 - **Async Command Handlers**: `#[tauri::command]` offloads physics to separate threads.
 - **Chromium DevTools**: Full element inspection, console tracing, performance profiling.
@@ -180,7 +188,9 @@ KiCad 10 exposes its scripting and board-manipulation capabilities via a socket-
 ## 5. Execution & Git Branch Strategy
 
 ### Test-Driven Validation Requirements
-*   **Offline Test-Driven Validation**: All changes must be backed by unit tests. The core config and geometry engines must remain runnable offline without requiring a live KiCad 10 IPC socket connection.
+
+- **Offline Test-Driven Validation**: All changes must be backed by unit tests. The core config and geometry engines must remain runnable offline without requiring a live KiCad 10 IPC socket connection.
 
 ### Git Branch Strategy & Execution Guardrails
-*   **Branch Partitioning**: Feature developments for each phase will be executed on isolated feature branches (e.g., `feat/phase4-ui-overhaul`) and submitted as separate GitHub Pull Requests.
+
+- **Branch Partitioning**: Feature developments for each phase will be executed on isolated feature branches (e.g., `feat/phase4-ui-overhaul`) and submitted as separate GitHub Pull Requests.

@@ -198,3 +198,62 @@ The following features are explicitly **out of scope for the current phase** and
 
 ### B. Config Refactor: `active_area_length_m` as Stored Field — COMPLETED IN PHASE 4
 The config refactor was completed in Phase 4 (not deferred to Phase 5). `LinearMotorConfig` now stores `active_area_length_m` as the primary input field, and `travel_m` is a **derived `@property`**: `active_area_length_m - coil_span_m`. The `active_length_m` property returns `active_area_length_m` directly. All tests, scripts, and serialization have been updated. The serialization layer accepts both new (`active_area_length_m`) and legacy (`travel_m`) JSON keys for backwards compatibility.
+
+---
+
+## 8. Technical Specifications (Phase 5+6 Combined Execution)
+
+> Added by the Orchestrator to lock down architecture variables for the combined Rust physics core + Tauri/Svelte scaffold. These supersede any conflicting guidance.
+
+### A. Combined-Phase Strategy
+Phases 5 and 6 are executed **together** rather than sequentially. The Tauri + Svelte + Vite + Tailwind application shell is scaffolded FIRST so that Rust physics development happens inside a real desktop app (with `cargo` workspace, `#[tauri::command]` handlers, and a dev server) from day one — rather than porting to a bare Rust crate first and bolting Tauri on later.
+
+### B. Workspace Layout
+```
+kicad-pcbmotorcoils/
+├── pcbstatorgen/            # Python core — UNCHANGED, retained as test oracle (Stage 5 / Phase 7)
+├── tests/                   # Python pytest suite — UNCHANGED, test oracle
+├── crates/
+│   └── pcbstatorgen-rs/     # Rust physics library crate (pure, no Tauri dep)
+│       ├── Cargo.toml
+│       └── src/ (config, units, magnet_grades, geometry/, magnetic/, stackup/, physics/)
+├── app/                     # Tauri + Svelte desktop application
+│   ├── src-tauri/           # Tauri host binary — depends on pcbstatorgen-rs
+│   ├── src/                 # Svelte 5 frontend (runes mode)
+│   ├── package.json
+│   ├── vite.config.ts
+│   └── tailwind.config.js
+├── Cargo.toml               # Workspace root (members: crates/pcbstatorgen-rs, app/src-tauri)
+└── ...
+```
+
+### C. Pinned Crate Versions
+| Crate | Version | Role |
+| --- | --- | --- |
+| `magba` | `=0.6.2` | Analytical cuboid B-field (Magpylib-validated). PINNED — wrap in adapter. |
+| `nalgebra` | `0.33` | Vector math: cross-products, quaternions for magnet orientation. |
+| `rayon` | `1.10` | Data-parallel B-field sampling across observation points. |
+| `serde` / `serde_json` | `1.0` | Config + result serialization for Tauri IPC. |
+| `tauri` | `2` | Desktop app host, async command handlers. |
+| `svelte` | `5` | Frontend (runes: `$state`, `$derived`, `$effect`). |
+| `vite` | `5+` | Frontend bundler / dev server. |
+| `tailwindcss` | `3.4` | Utility CSS. |
+
+### D. Adapter Layer Convention
+All direct `magba` calls are isolated behind a `pcbstatorgen_rs::physics` adapter module. Upstream code (force evaluator, field sampler) calls `physics::compute_b_field(...)` / `physics::CuboidSource`, never `magba::...` directly. This insulates the codebase from magba API breaks if the version pin is lifted later.
+
+### E. Test Oracle Protocol
+- Python codebase is **NOT deleted** (Stage 5 deprecation is Phase 7). It remains the validation oracle.
+- A `scripts/export_test_vectors.py` script dumps canonical JSON fixtures (config → coils → force sweeps) consumed by Rust unit tests.
+- Rust tests load these vectors and assert numerical agreement within a documented tolerance (B-field ±1%, force ±2%, ripple ±0.5pp).
+
+### F. Sign Conventions (locked)
+- `F_mover = -F_stator` (Newton's Third Law calibration, §4.C).
+- Self-calibration guard at startup: test step of `+0.1·τ_p`; if `F_mover < 0`, invert phase currents (180° shift).
+- Ripple % = `(F_max - F_min) / |F_mean| × 100`.
+- Travel = `active_area_length - coil_span` (active area is INPUT, travel is DERIVED/READ-ONLY).
+
+### G. Scope Boundaries for Phase 5+6
+- **Linear mode ONLY.** Radial/axial-flux UI toggle is disabled and labelled TODO. `AxialMotorConfig` remains a stub.
+- KiCad IPC writer is Phase 7 — NOT in scope here. Tauri commands expose physics + geometry + stackup only.
+- No public/distribution packaging.

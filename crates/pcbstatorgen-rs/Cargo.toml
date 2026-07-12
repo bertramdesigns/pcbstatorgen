@@ -1,0 +1,21 @@
+[package]
+name = "pcbstatorgen-rs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Analytical magnetic field, Lorentz force, and PCB stator geometry for coreless linear motors (Rust port of pcbstatorgen)"
+
+[dependencies]
+magba = { workspace = true }
+nalgebra = { workspace = true }
+rayon = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+# Test vector loading + approximate float assertions
+
+[lib]
+name = "pcbstatorgen_rs"
+path = "src/lib.rs"
