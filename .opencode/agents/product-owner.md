@@ -1,6 +1,6 @@
 ---
 description: Primary Strategy Agent managing product architecture, roadmap, and high-level requirements.
-mode: agent
+mode: primary
 color: "#A0A0A0"
 permission:
   edit:

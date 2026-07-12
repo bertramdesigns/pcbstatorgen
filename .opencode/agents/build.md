@@ -1,6 +1,6 @@
 ---
 description: Primary Technical Agent and Engineering Orchestrator.
-mode: agent
+mode: primary
 color: "#1f77b4"
 ---
 
