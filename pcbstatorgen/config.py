@@ -48,7 +48,7 @@ Build a configuration for a 75 mm studio mover::
     from pcbstatorgen.units import mm, mils_to_m
 
     cfg = LinearMotorConfig(
-        travel_m=mm(75),
+        active_area_length_m=mm(195),   # 75 mm travel + 120 mm coil span
         magnet_dims_m=(mm(10), mm(10), mm(4)),
         target_force_n=0.25,      # 250 mN continuous
         peak_force_n=0.5,         # 500 mN burst
@@ -64,6 +64,7 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Optional
 
+from pcbstatorgen.magnet_grades import CUSTOM_GRADE, get_remanence
 from pcbstatorgen.units import mm, mils_to_m, oz_to_m
 
 __all__ = [
@@ -202,8 +203,8 @@ class BaseMotorConfig:
         alternating-pole arrangement.  Default: 10.
     magnet_pitch_m:
         Centre-to-centre magnet spacing along the travel axis [m].  Equals
-        one pole pitch.  Must be ≥ ``magnet_dims_m[0] + 0.3 mm`` for assembly
-        clearance.  Default: 12 mm.
+        one pole pitch.  Must be ≥ ``magnet_dims_m[0]`` (gap ≥ 0).
+        Default: 12 mm.
     magnet_remanence_t:
         Remnant flux density **Br** at operating temperature [T].
         N44H at 20 °C: 1.32–1.38 T.  Default: 1.35 T.
@@ -264,7 +265,13 @@ class BaseMotorConfig:
     """Centre-to-centre magnet spacing = pole pitch [m]."""
 
     magnet_remanence_t: float = 1.35
-    """Remnant flux density Br at 20 °C [T]."""
+    """Remnant flux density Br at 20 °C [T].  Auto-synced from ``magnet_grade``
+    unless ``magnet_grade == "Custom"``."""
+
+    magnet_grade: str = "N44"
+    """Standard NdFeB grade name (N35–N52).  When not ``"Custom"``,
+    ``magnet_remanence_t`` is auto-set to the grade's typical Br in
+    ``__post_init__``."""
 
     magnet_arrangement: MagnetArrangement = MagnetArrangement.ALTERNATING
     """Pole/flux-concentrator arrangement."""
@@ -319,7 +326,17 @@ class BaseMotorConfig:
     # ------------------------------------------------------------------
 
     def __post_init__(self) -> None:
+        self._sync_magnet_grade()
         self._validate_base()
+
+    def _sync_magnet_grade(self) -> None:
+        """Sync ``magnet_remanence_t`` from ``magnet_grade`` unless Custom."""
+        if self.magnet_grade == CUSTOM_GRADE:
+            return
+        try:
+            self.magnet_remanence_t = get_remanence(self.magnet_grade)
+        except KeyError:
+            pass
 
     @property
     def magnet_gap_m(self) -> float:
@@ -340,14 +357,12 @@ class BaseMotorConfig:
             )
         if self.magnet_pitch_m <= 0:
             raise ValueError(f"magnet_pitch_m must be positive, got {self.magnet_pitch_m}")
-        # Assembly gap: at least 0.3 mm clearance between adjacent magnets.
-        # Tolerance of 1e-10 m (~0.1 pm) absorbs float representation of mm(0.3).
         assembly_gap_m = self.magnet_pitch_m - self.magnet_dims_m[0]
-        if assembly_gap_m < mm(0.3) - 1e-10:
+        if assembly_gap_m < -1e-10:
             raise ValueError(
-                f"magnet_pitch_m ({self.magnet_pitch_m * 1e3:.2f} mm) too close to "
+                f"magnet_pitch_m ({self.magnet_pitch_m * 1e3:.2f} mm) must be ≥ "
                 f"magnet width ({self.magnet_dims_m[0] * 1e3:.2f} mm) — "
-                f"inter-magnet assembly gap must be ≥ 0.3 mm "
+                f"inter-magnet gap cannot be negative "
                 f"(current gap: {assembly_gap_m * 1e3:.2f} mm)"
             )
         if self.magnet_remanence_t <= 0 or self.magnet_remanence_t > 2.5:
@@ -425,8 +440,10 @@ class LinearMotorConfig(BaseMotorConfig):
 
     Parameters
     ----------
-    travel_m:
-        Total mover travel range [m].  Typical: 60–100 mm.
+    active_area_length_m:
+        Physical length of the stator copper trace region [m].  This is the
+        primary board constraint — the PCB area available for coil traces.
+        Travel is derived: ``travel = active_area_length - coil_span``.
     board_width_m:
         PCB width perpendicular to the travel axis [m].  Constrains coil
         winding depth.  Default: 20 mm.
@@ -460,7 +477,9 @@ class LinearMotorConfig(BaseMotorConfig):
     """
 
     # Required — no sensible universal default
-    travel_m: float
+    active_area_length_m: float
+    """Physical length of the stator copper trace region [m].  This is the
+    primary board constraint — the PCB area available for coil traces."""
 
     # Optional with defaults
     board_width_m: float = field(default_factory=lambda: mm(20))
@@ -497,8 +516,17 @@ class LinearMotorConfig(BaseMotorConfig):
 
     def _validate_linear(self) -> None:
         """Validate fields specific to linear motors."""
-        if self.travel_m <= 0:
-            raise ValueError(f"travel_m must be positive, got {self.travel_m}")
+        if self.active_area_length_m <= 0:
+            raise ValueError(
+                f"active_area_length_m must be positive, got {self.active_area_length_m}"
+            )
+        if self.active_area_length_m <= self.coil_span_m:
+            raise ValueError(
+                f"active_area_length_m ({self.active_area_length_m * 1e3:.1f} mm) must be > "
+                f"coil_span ({self.coil_span_m * 1e3:.1f} mm = "
+                f"{self.magnet_count} magnets × {self.magnet_pitch_m * 1e3:.1f} mm) — "
+                f"travel would be zero or negative"
+            )
         if self.board_width_m <= 0:
             raise ValueError(f"board_width_m must be positive, got {self.board_width_m}")
         if self.pcb_thickness_m <= 0:
@@ -533,13 +561,24 @@ class LinearMotorConfig(BaseMotorConfig):
         return self.magnet_count * self.magnet_pitch_m
 
     @property
+    def travel_m(self) -> float:
+        """Derived mover travel range [m].
+
+        ``active_area_length_m - coil_span_m``: the stator trace region must
+        extend past both ends of the mover's travel by the coil span so that
+        magnets stay over the winding at both extremes.
+        """
+        return self.active_area_length_m - self.coil_span_m
+
+    @property
     def active_length_m(self) -> float:
         """Minimum PCB length required [m].
 
-        ``travel_m + coil_span_m``: the coil must extend past both ends of the
+        Equals ``active_area_length_m`` — the physical length of the stator
+        copper trace region.  The coil must extend past both ends of the
         travel range to prevent force drop-off at the extremes.
         """
-        return self.travel_m + self.coil_span_m
+        return self.active_area_length_m
 
     @property
     def acceleration_force_n(self) -> float:
@@ -569,8 +608,9 @@ class LinearMotorConfig(BaseMotorConfig):
         topology_label = self.coil_topology.value
         lines = [
             f"LinearMotorConfig: {self.name or '(unnamed)'}",
-            f"  Travel:          {self.travel_m * 1e3:.1f} mm",
-            f"  Active length:   {self.active_length_m * 1e3:.1f} mm",
+            f"  Active area len:  {self.active_area_length_m * 1e3:.1f} mm",
+            f"  Travel (derived): {self.travel_m * 1e3:.1f} mm",
+            f"  Coil span:        {self.coil_span_m * 1e3:.1f} mm",
             f"  Magnet:          {self.magnet_count}× N44H "
             f"{self.magnet_dims_m[0]*1e3:.0f}×"
             f"{self.magnet_dims_m[1]*1e3:.0f}×"

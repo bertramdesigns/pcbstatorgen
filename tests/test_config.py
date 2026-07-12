@@ -26,7 +26,7 @@ class TestMotorConfigConstruction:
     def test_name_stored(self):
         cfg = MotorConfig(
             name="my-actuator",
-            travel_m=mm(75),
+            active_area_length_m=mm(195),
             magnet_dims_m=(mm(10), mm(10), mm(4)),
             magnet_count=10,
             magnet_pitch_m=mm(12),
@@ -35,28 +35,28 @@ class TestMotorConfigConstruction:
 
     def test_name_optional(self):
         cfg = MotorConfig(
-            travel_m=mm(75),
+            active_area_length_m=mm(195),
             magnet_dims_m=(mm(10), mm(10), mm(4)),
         )
         assert cfg.name is None
 
     def test_default_phases(self):
         cfg = MotorConfig(
-            travel_m=mm(75),
+            active_area_length_m=mm(195),
             magnet_dims_m=(mm(10), mm(10), mm(4)),
         )
         assert cfg.phases == 3
 
     def test_default_magnet_count(self):
         cfg = MotorConfig(
-            travel_m=mm(75),
+            active_area_length_m=mm(195),
             magnet_dims_m=(mm(10), mm(10), mm(4)),
         )
         assert cfg.magnet_count == 10
 
     def test_default_max_layers_is_even(self):
         cfg = MotorConfig(
-            travel_m=mm(75),
+            active_area_length_m=mm(195),
             magnet_dims_m=(mm(10), mm(10), mm(4)),
         )
         assert cfg.max_layers % 2 == 0
@@ -65,32 +65,42 @@ class TestMotorConfigConstruction:
 class TestMotorConfigValidation:
     def _base_kwargs(self):
         return dict(
-            travel_m=mm(75),
+            active_area_length_m=mm(195),
             magnet_dims_m=(mm(10), mm(10), mm(4)),
             magnet_count=10,
             magnet_pitch_m=mm(12),
         )
 
-    def test_zero_travel_raises(self):
-        with pytest.raises(ValueError, match="travel_m must be positive"):
-            MotorConfig(travel_m=0.0, magnet_dims_m=(mm(10), mm(10), mm(4)))
+    def test_zero_active_area_raises(self):
+        with pytest.raises(ValueError, match="active_area_length_m must be positive"):
+            MotorConfig(active_area_length_m=0.0, magnet_dims_m=(mm(10), mm(10), mm(4)))
 
-    def test_negative_travel_raises(self):
-        with pytest.raises(ValueError, match="travel_m must be positive"):
-            MotorConfig(travel_m=-mm(10), magnet_dims_m=(mm(10), mm(10), mm(4)))
+    def test_negative_active_area_raises(self):
+        with pytest.raises(ValueError, match="active_area_length_m must be positive"):
+            MotorConfig(active_area_length_m=-mm(10), magnet_dims_m=(mm(10), mm(10), mm(4)))
+
+    def test_active_area_le_coil_span_raises(self):
+        """active_area_length_m <= coil_span_m would give zero/negative travel."""
+        with pytest.raises(ValueError, match="active_area_length_m.*must be > coil_span"):
+            MotorConfig(
+                active_area_length_m=mm(120),  # == coil_span (10 × 12 mm)
+                magnet_dims_m=(mm(10), mm(10), mm(4)),
+                magnet_count=10,
+                magnet_pitch_m=mm(12),
+            )
 
     def test_wrong_magnet_dims_length_raises(self):
         with pytest.raises(ValueError, match="magnet_dims_m must be a 3-tuple"):
-            MotorConfig(travel_m=mm(75), magnet_dims_m=(mm(10), mm(10)))
+            MotorConfig(active_area_length_m=mm(195), magnet_dims_m=(mm(10), mm(10)))
 
     def test_zero_magnet_dim_raises(self):
         with pytest.raises(ValueError, match="All magnet dimensions must be positive"):
-            MotorConfig(travel_m=mm(75), magnet_dims_m=(0.0, mm(10), mm(4)))
+            MotorConfig(active_area_length_m=mm(195), magnet_dims_m=(0.0, mm(10), mm(4)))
 
     def test_odd_magnet_count_raises(self):
         with pytest.raises(ValueError, match="magnet_count must be even"):
             MotorConfig(
-                travel_m=mm(75),
+                active_area_length_m=mm(195),
                 magnet_dims_m=(mm(10), mm(10), mm(4)),
                 magnet_count=9,
             )
@@ -98,7 +108,7 @@ class TestMotorConfigValidation:
     def test_magnet_count_one_raises(self):
         with pytest.raises(ValueError):
             MotorConfig(
-                travel_m=mm(75),
+                active_area_length_m=mm(195),
                 magnet_dims_m=(mm(10), mm(10), mm(4)),
                 magnet_count=1,
             )
@@ -106,7 +116,7 @@ class TestMotorConfigValidation:
     def test_pitch_smaller_than_magnet_width_raises(self):
         with pytest.raises(ValueError, match="magnet_pitch_m"):
             MotorConfig(
-                travel_m=mm(75),
+                active_area_length_m=mm(195),
                 magnet_dims_m=(mm(15), mm(10), mm(4)),
                 magnet_pitch_m=mm(12),  # 12 mm < 15 mm magnet width
             )
@@ -114,16 +124,18 @@ class TestMotorConfigValidation:
     def test_unrealistic_remanence_raises(self):
         with pytest.raises(ValueError, match="magnet_remanence_t"):
             MotorConfig(
-                travel_m=mm(75),
+                active_area_length_m=mm(195),
                 magnet_dims_m=(mm(10), mm(10), mm(4)),
+                magnet_grade="Custom",
                 magnet_remanence_t=3.0,  # above physical limit
             )
 
     def test_zero_remanence_raises(self):
         with pytest.raises(ValueError, match="magnet_remanence_t"):
             MotorConfig(
-                travel_m=mm(75),
+                active_area_length_m=mm(195),
                 magnet_dims_m=(mm(10), mm(10), mm(4)),
+                magnet_grade="Custom",
                 magnet_remanence_t=0.0,
             )
 
@@ -204,21 +216,21 @@ class TestMotorConfigSummary:
 
     def test_summary_contains_key_values(self, default_config):
         s = default_config.summary()
-        assert "75" in s       # travel mm
+        assert "75" in s       # travel mm (derived)
         assert "10" in s       # magnet count
         assert "500" in s      # target force (displayed as 500 mN)
 
     def test_summary_contains_name(self):
         cfg = MotorConfig(
             name="custom-name",
-            travel_m=mm(75),
+            active_area_length_m=mm(195),
             magnet_dims_m=(mm(10), mm(10), mm(4)),
         )
         assert "custom-name" in cfg.summary()
 
     def test_summary_unnamed_placeholder(self):
         cfg = MotorConfig(
-            travel_m=mm(75),
+            active_area_length_m=mm(195),
             magnet_dims_m=(mm(10), mm(10), mm(4)),
         )
         assert "(unnamed)" in cfg.summary()

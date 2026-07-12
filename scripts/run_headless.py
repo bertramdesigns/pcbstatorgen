@@ -85,9 +85,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def build_config(args: argparse.Namespace) -> MotorConfig:
     """Construct a MotorConfig from parsed CLI arguments."""
+    # --travel is the user-facing mover travel; convert to active_area_length
+    # by adding the coil span (magnet_count × magnet_pitch = 10 × 12 mm = 120 mm).
+    coil_span_mm = 10 * 12.0
     return MotorConfig(
         name=args.name or f"headless-t{args.travel:.0f}mm-f{args.force:.2f}N",
-        travel_m=mm(args.travel),
+        active_area_length_m=mm(args.travel + coil_span_mm),
         magnet_dims_m=(mm(10), mm(10), mm(4)),
         magnet_count=10,
         magnet_pitch_m=mm(12),

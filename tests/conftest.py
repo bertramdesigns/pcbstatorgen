@@ -23,11 +23,10 @@ def default_config() -> MotorConfig:
     """Minimal valid MotorConfig with realistic flying-fader parameters."""
     return MotorConfig(
         name="test-config",
-        travel_m=mm(75),
+        active_area_length_m=mm(195),
         magnet_dims_m=(mm(10), mm(10), mm(4)),
         magnet_count=10,
         magnet_pitch_m=mm(12),
-        magnet_remanence_t=1.35,
         phases=3,
         target_force_n=0.5,
         max_current_a=1.0,
@@ -46,7 +45,7 @@ def default_config() -> MotorConfig:
 def minimal_config() -> MotorConfig:
     """Smallest valid MotorConfig — 2 magnets, coarser design rules."""
     return MotorConfig(
-        travel_m=mm(60),
+        active_area_length_m=mm(78),
         magnet_dims_m=(mm(8), mm(8), mm(3)),
         magnet_count=2,
         magnet_pitch_m=mm(9),

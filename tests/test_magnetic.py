@@ -41,7 +41,7 @@ def small_config(default_config) -> MotorConfig:
 def tiny_config() -> MotorConfig:
     """Reduced config for fast force tests: 4 magnets, 1-phase, short travel."""
     return MotorConfig(
-        travel_m=mm(24),
+        active_area_length_m=mm(72),
         magnet_dims_m=(mm(10), mm(10), mm(4)),
         magnet_count=4,
         magnet_pitch_m=mm(12),

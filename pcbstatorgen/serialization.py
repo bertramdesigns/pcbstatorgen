@@ -74,6 +74,19 @@ def config_from_dict(data: dict[str, Any]) -> BaseMotorConfig:
     if "magnet_dims_m" in data:
         data["magnet_dims_m"] = tuple(data["magnet_dims_m"])
 
+    # Backwards compat: old serialized data may contain the legacy ``travel_m``
+    # field instead of ``active_area_length_m``.  Reconstruct it so old JSON
+    # files continue to load.
+    if (
+        "active_area_length_m" not in data
+        and "travel_m" in data
+        and "stator_OD_m" not in data
+    ):
+        magnet_count = data.get("magnet_count", 10)
+        magnet_pitch = data.get("magnet_pitch_m", 0.012)
+        data["active_area_length_m"] = data["travel_m"] + magnet_count * magnet_pitch
+        del data["travel_m"]
+
     # Choose the right class
     if config_type == "AxialMotorConfig" or "stator_OD_m" in data:
         return AxialMotorConfig(**_filter_fields(data, AxialMotorConfig))
