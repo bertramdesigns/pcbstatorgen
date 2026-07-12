@@ -130,6 +130,7 @@ def handle_request(req: dict[str, Any]) -> dict[str, Any]:
                 "slot_pitch_mm": config.slot_pitch_m * 1000,
                 "active_length_mm": config.active_length_m * 1000,
                 "board_width_mm": config.board_width_m * 1000,
+                "active_area_length_mm": getattr(config, "active_area_length_m", config.active_length_m) * 1000,
                 "travel_mm": config.travel_m * 1000,
             }}
 

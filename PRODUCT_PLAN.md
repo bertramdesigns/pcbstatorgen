@@ -28,6 +28,9 @@ This document contains the implementation roadmap, architectural feasibility stu
 │    travel and board width fixes, magnet helpers,       │
 │    spacing ratios/Vernier dropdown, ripple calculations.│
 │  - Python core decoupled & JSON-serializable (DONE)    │
+│  - Radial (axial-flux) toggle DISABLED — TODO           │
+│  - Travel calc direction FIX: active_area = INPUT,      │
+│    travel = DERIVED (config refactor done in P4)        │
 └──────────────────────────┬─────────────────────────────┘
                            ▼
 ┌────────────────────────────────────────────────────────┐
@@ -41,7 +44,11 @@ This document contains the implementation roadmap, architectural feasibility stu
 │  PHASE 6: Tauri + Svelte Desktop Application            │
 │  - Tauri shell, Svelte dashboard, Tailwind CSS          │
 │  - Async physics commands, Chromium DevTools            │
-│  - Linear/Radial toggle, live metrics, SVG previews     │
+│  - Linear toggle ONLY (Radial still TODO)               │
+│  - Live metrics, SVG previews                           │
+│  - Interactive travel/active-area diagram:              │
+│    stator bar + sliding mover bar + travel zone         │
+│    (illustrates travel = stator_len - mover_len)        │
 └──────────────────────────┬─────────────────────────────┘
                            ▼
 ┌────────────────────────────────────────────────────────┐
@@ -146,7 +153,9 @@ KiCad 10 exposes its scripting and board-manipulation capabilities via a socket-
 ┌────────────────────────────────────────────────────────┐
 │  STAGE 3: Svelte Frontend & Live Metric Binding         │
 │  - Build single-dashboard UI with Svelte components     │
-│  - Linear/Radial toggle, magnet grade helper, etc.       │
+│  - Linear toggle (Radial still TODO/disabled)            │
+│  - Magnet grade helper, Vernier ratios, ripple metrics   │
+│  - Interactive stator/mover/travel diagram              │
 │  - Bind sliders to throttled Tauri backend commands     │
 │  - Integrate Chromium DevTools for debugging             │
 └──────────────────────────┬─────────────────────────────┘
