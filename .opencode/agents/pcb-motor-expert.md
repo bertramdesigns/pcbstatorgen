@@ -1,7 +1,10 @@
 ---
 description: Expert in linear motor faders, axial flux PCB stators, and haptic actuator physics.
 mode: subagent
+model: openrouter/glm-5.2#xhigh
 color: "#9933FF"
+permission:
+  edit: deny
 ---
 
 # PCB Axial & Linear Motor Expert

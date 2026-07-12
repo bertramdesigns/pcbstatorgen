@@ -285,18 +285,25 @@ class TestLinearMotorConfigNewValidation:
 
 
 # ===========================================================================
-# AxialMotorConfig stub
+# AxialMotorConfig
 # ===========================================================================
 
 
-class TestAxialMotorConfigStub:
-    def test_instantiation_raises_not_implemented(self):
-        with pytest.raises(NotImplementedError):
-            AxialMotorConfig(stator_OD_m=mm(80))
+class TestAxialMotorConfig:
+    def test_instantiation_success(self):
+        cfg = AxialMotorConfig(stator_OD_m=mm(80), stator_ID_m=mm(30))
+        assert cfg.stator_OD_m == mm(80)
+        assert cfg.stator_ID_m == mm(30)
+        assert cfg.mean_radius_m == mm(27.5)  # (80+30)/4 = 27.5 mm
+        assert cfg.board_width_m == mm(25)    # (80-30)/2 = 25 mm
 
-    def test_error_message_mentions_issue(self):
-        with pytest.raises(NotImplementedError, match="GitHub Issue"):
-            AxialMotorConfig()
+    def test_invalid_diameters_raise(self):
+        with pytest.raises(ValueError, match="stator_OD_m"):
+            AxialMotorConfig(stator_OD_m=-0.08)
+        with pytest.raises(ValueError, match="stator_ID_m"):
+            AxialMotorConfig(stator_OD_m=mm(80), stator_ID_m=-0.03)
+        with pytest.raises(ValueError, match="stator_ID_m.*stator_OD_m"):
+            AxialMotorConfig(stator_OD_m=mm(50), stator_ID_m=mm(50))
 
     def test_is_subclass_of_base(self):
         assert issubclass(AxialMotorConfig, BaseMotorConfig)

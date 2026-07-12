@@ -78,6 +78,7 @@ from pcbstatorgen.geometry.wave_winding import (
     PhaseCoil,
     PHASE_NAMES,
     WaveWindingGenerator,
+    SineWaveWindingGenerator,
 )
 
 __all__ = [
@@ -90,6 +91,7 @@ __all__ = [
 # Type alias for the generator union
 CoilGenerator = Union[
     WaveWindingGenerator,
+    SineWaveWindingGenerator,
     "ConcentratedCoilGenerator",
     "RhombicCoilGenerator",
     "SpiralCoilGenerator",
@@ -131,6 +133,8 @@ def make_coil_generator(topology: CoilTopology, **kwargs) -> CoilGenerator:
     match topology:
         case CoilTopology.SERPENTINE:
             return WaveWindingGenerator(**kwargs)
+        case CoilTopology.SINE_WAVE:
+            return SineWaveWindingGenerator(**kwargs)
         case CoilTopology.CONCENTRATED:
             return ConcentratedCoilGenerator(**kwargs)
         case CoilTopology.RHOMBIC:

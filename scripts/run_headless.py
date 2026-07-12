@@ -42,7 +42,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--travel", type=float, default=75.0, metavar="MM",
-        help="Fader travel distance [mm]",
+        help="Mover travel distance [mm]",
     )
     parser.add_argument(
         "--force", type=float, default=0.5, metavar="N",

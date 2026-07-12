@@ -1,0 +1,67 @@
+{
+  "task_id": "phase4-ui-overhaul",
+  "target_subagent": "ui-engineer",
+  "status": "pending",
+  "title": "Phase 4: Single-Dashboard UI Overhaul & Code Modifications",
+  "description": "Remove the multi-step Wizard in streamlit_app.py and build a unified Advanced Dashboard integrating Center-to-Center Travel, Active Area Width, Magnet Grade Br Helper, Gap/Pole-Pitch calculations, Cogging/Ripple physics feedback, and Vernier spacing ratios.",
+  "variables": {
+    "travel_m_mapping": {
+      "ui_label": "Center-to-Center Travel (mm)",
+      "tooltip": "The continuous displacement range of the carriage reference center.",
+      "mathematics": "Active Zone Length (L_active) = L_travel_c2c + coil_span"
+    },
+    "board_width_mapping": {
+      "ui_label": "Active Area Width (mm)",
+      "tooltip": "Width of the active trace area perpendicular to motion where active conductors run to generate Lorentz force."
+    },
+    "magnet_grade_helper": {
+      "N35": 1.19,
+      "N38": 1.23,
+      "N42": 1.30,
+      "N44H": 1.34,
+      "N48": 1.40,
+      "N52": 1.45
+    },
+    "magnet_pitch_overhaul": {
+      "ui_label": "Gap between magnets (mm)",
+      "dynamic_calculation": "pole_pitch = magnet_width + gap",
+      "minimum_value": 0.0
+    },
+    "physics_additions": {
+      "cogging_stator": "0.0 N (Coreless / air-core stator eliminates cogging force completely)",
+      "ripple_percent_formula": "Ripple % = ((F_max - F_min) / F_mean) * 100",
+      "spacing_ratio_options": [
+        "1:1 Standard (Full winding coupling)",
+        "4:5 Vernier Ratio (Cancels 5th harmonic, reduces ripple)",
+        "5:6 Vernier Ratio (Cancels 6th harmonic, reduces ripple)"
+      ]
+    }
+  },
+  "execution_steps": [
+    {
+      "step_id": 1,
+      "file": "gui/streamlit_app.py",
+      "action": "Remove wizard mode. Convert UI into a single state-contained Advanced Dashboard with sidebar toggles and collapsibles."
+    },
+    {
+      "step_id": 2,
+      "file": "gui/streamlit_app.py",
+      "action": "Implement the Linear vs. Radial (Rotary) high-level toggle that dynamically swaps variables and terminology."
+    },
+    {
+      "step_id": 3,
+      "file": "gui/streamlit_app.py",
+      "action": "Refactor Travel, Board Width, Magnet Grade, and Magnet Gap controls according to mathematical specifications."
+    },
+    {
+      "step_id": 4,
+      "file": "gui/streamlit_app.py",
+      "action": "Integrate zero-cogging explanation, live force ripple computation, and the Spacing Ratio dropdown into physics feedback panels."
+    },
+    {
+      "step_id": 5,
+      "file": "pcbstatorgen/config.py",
+      "action": "Update default or derived property methods if necessary to reflect the updated configurations cleanly."
+    }
+  ]
+}

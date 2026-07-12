@@ -2,11 +2,11 @@
 pcbstatorgen.magnetic.force_eval
 =======================================
 Evaluates the linear thrust force and torque on the PCB stator coil as a
-function of fader position using Magpylib v5 ``getFT()``.
+function of mover position using Magpylib v5 ``getFT()``.
 
 Physical model
 --------------
-The fader carriage (magnet array) slides in the +X direction over the
+The mover carriage (magnet array) slides in the +X direction over the
 stationary PCB stator.  At each carriage position the 3-phase winding is
 energised according to a *commutation* strategy that maximises continuous
 thrust.
@@ -24,7 +24,7 @@ Two commutation strategies are provided:
         I_B = I_{\\text{peak}} \\cdot \\sin(\\theta_e - 2\\pi/3)\\\\
         I_C = I_{\\text{peak}} \\cdot \\sin(\\theta_e + 2\\pi/3)
 
-    where :math:`\\theta_e = 2\\pi \\cdot p / (2\\tau)` and *p* is the fader
+    where :math:`\\theta_e = 2\\pi \\cdot p / (2\\tau)` and *p* is the mover
     position.
 
 ``phase_a_only``
@@ -84,14 +84,14 @@ CommutationMode = Literal["max_torque", "phase_a_only"]
 
 @dataclass
 class ForceResult:
-    """Force sweep results across the fader travel range.
+    """Force sweep results across the mover travel range.
 
     All force arrays are in SI units (Newtons).
 
     Parameters
     ----------
     positions_m:
-        Fader positions at which force was evaluated, shape ``(n,)`` [m].
+        Mover positions at which force was evaluated, shape ``(n,)`` [m].
     force_x_n:
         Total X (thrust) force at each position, shape ``(n,)`` [N].
     force_y_n:
@@ -166,12 +166,12 @@ class ForceResult:
 
 
 class ForceEvaluator:
-    """Evaluate thrust force across the fader travel range.
+    """Evaluate thrust force across the mover travel range.
 
     Parameters
     ----------
     n_positions:
-        Number of uniformly-spaced fader positions to evaluate.  Default: 50.
+        Number of uniformly-spaced mover positions to evaluate.  Default: 50.
         More positions give a smoother ripple curve but take longer.
     meshing:
         Polyline meshing density passed to :class:`~CoilCurrentModel`.
@@ -222,7 +222,7 @@ class ForceEvaluator:
         config: MotorConfig,
         coils: list[PhaseCoil],
     ) -> ForceResult:
-        """Sweep fader position from 0 to ``config.travel_m`` and compute force.
+        """Sweep mover position from 0 to ``config.travel_m`` and compute force.
 
         Parameters
         ----------
@@ -253,10 +253,10 @@ class ForceEvaluator:
         for i, pos in enumerate(positions):
             currents = self._commutation_currents(
                 config=config,
-                fader_position_m=pos,
+                mover_position_m=pos,
                 n_phases=n_phases,
             )
-            magnets = magnet_array.build_collection(fader_position_m=pos)
+            magnets = magnet_array.build_collection(mover_position_m=pos)
             phase_sources = coil_model.build_all_phases(coils, currents)
 
             # Compute force on all conductors simultaneously
@@ -292,9 +292,9 @@ class ForceEvaluator:
         self,
         config: MotorConfig,
         coils: list[PhaseCoil],
-        fader_position_m: float,
+        mover_position_m: float,
     ) -> tuple[np.ndarray, np.ndarray]:
-        """Compute force and torque at a single fader position.
+        """Compute force and torque at a single mover position.
 
         Returns
         -------
@@ -304,7 +304,7 @@ class ForceEvaluator:
         """
         currents = self._commutation_currents(
             config=config,
-            fader_position_m=fader_position_m,
+            mover_position_m=mover_position_m,
             n_phases=len(coils),
         )
         magnet_array = MagnetArray(config)
@@ -312,7 +312,7 @@ class ForceEvaluator:
             meshing=self.meshing,
             layer_z_m=self.layer_z_m,
         )
-        magnets = magnet_array.build_collection(fader_position_m=fader_position_m)
+        magnets = magnet_array.build_collection(mover_position_m=mover_position_m)
         flat = coil_model.flat_polylines(
             coil_model.build_all_phases(coils, currents)
         )
@@ -328,17 +328,17 @@ class ForceEvaluator:
     def _commutation_currents(
         self,
         config: MotorConfig,
-        fader_position_m: float,
+        mover_position_m: float,
         n_phases: int,
     ) -> list[float]:
-        """Return the signed phase currents [A] for the given fader position.
+        """Return the signed phase currents [A] for the given mover position.
 
         Parameters
         ----------
         config:
             Motor configuration.
-        fader_position_m:
-            Current fader position [m].
+        mover_position_m:
+            Current mover position [m].
         n_phases:
             Number of phases.
 
@@ -359,7 +359,9 @@ class ForceEvaluator:
         # at the PCB surface is still 2τ, not τ.  No period change is needed here.
         # (If a true 4-magnet equal-width Halbach were used — ↑→↑← with Z+ at both
         # x=0 and x=τ — the period would be τ and this formula would need updating.)
-        theta_e = 2.0 * math.pi * fader_position_m / (2.0 * config.pole_pitch_m)
+        # π offset aligns IA = sin(θ_e) with cos(θ) so that current peaks
+        # when Phase A conductors are centred over magnet poles (max Bz).
+        theta_e = 2.0 * math.pi * mover_position_m / (2.0 * config.pole_pitch_m) + math.pi
         phase_offset = 2.0 * math.pi / n_phases  # 120° for 3-phase
         return [
             I_pk * math.sin(theta_e - p * phase_offset)
@@ -367,8 +369,8 @@ class ForceEvaluator:
         ]
 
     @staticmethod
-    def electrical_angle(config: MotorConfig, fader_position_m: float) -> float:
-        """Electrical angle in radians for a given fader position.
+    def electrical_angle(config: MotorConfig, mover_position_m: float) -> float:
+        """Electrical angle in radians for a given mover position.
 
         One full electrical cycle completes over **two pole pitches** for all
         four :class:`~pcbstatorgen.config.MagnetArrangement` values supported
@@ -380,12 +382,12 @@ class ForceEvaluator:
         ----------
         config:
             Motor configuration.
-        fader_position_m:
-            Fader position [m].
+        mover_position_m:
+            Mover position [m].
 
         Returns
         -------
         float
             Electrical angle [rad].
         """
-        return 2.0 * math.pi * fader_position_m / (2.0 * config.pole_pitch_m)
+        return 2.0 * math.pi * mover_position_m / (2.0 * config.pole_pitch_m)

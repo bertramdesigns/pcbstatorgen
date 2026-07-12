@@ -2,6 +2,8 @@
 description: Expert assistant for building GUI applications with Streamlit.
 mode: subagent
 color: "#FF4B4B"
+permission:
+  edit: deny
 ---
 
 # Streamlit Expert Directives
