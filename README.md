@@ -1,8 +1,7 @@
 # pcbstatorgen
 
 A tool for generating multi-layer PCB stator layouts for linear coreless
-motors. Designed for **flying fader** applications — motorised faders used
-in professional audio mixing consoles.
+motors.
 
 Rather than drawing copper traces by hand, `pcbstatorgen` computes the
 optimal coil geometry analytically, validates the motor force, and writes
@@ -191,6 +190,7 @@ the strongest field gradients by the outer layers.
 ### Why grid vias?
 
 For the default config (12 mm pole pitch, 0.2 mm drill):
+
 - Via pitch: 0.53 mm → **19 × 3 = 57 vias per end-turn**
 - Current capacity: 57 × 0.5 A = **28.5 A** (28× headroom at 1 A peak)
 - Thermal: current distributed across 57 parallel paths → no hotspot
