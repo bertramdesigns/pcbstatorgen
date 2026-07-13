@@ -1,4 +1,4 @@
-//! Power / thermal estimator. Ports `pcbstatorgen/stackup/power.py`.
+//! Power / thermal estimator.
 
 use crate::config::{LinearMotorConfig, PowerBudget, StackupResult};
 // TODO(product-owner): re-import WaveWindingGenerator once geometry Phase C

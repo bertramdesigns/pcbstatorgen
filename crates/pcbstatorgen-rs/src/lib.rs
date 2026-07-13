@@ -15,6 +15,7 @@
 
 pub mod config;
 pub mod geometry;
+pub mod kicad;
 pub mod magnetic;
 pub mod magnet_grades;
 pub mod physics;

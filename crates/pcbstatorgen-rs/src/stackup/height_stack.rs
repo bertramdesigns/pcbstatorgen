@@ -1,4 +1,4 @@
-//! Height stack calculator. Ports `pcbstatorgen/stackup/height_stack.py`.
+//! Height stack calculator.
 
 use crate::config::{HeightStackResult, LinearMotorConfig};
 use crate::units::oz_to_m;

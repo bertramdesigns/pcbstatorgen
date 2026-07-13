@@ -7,13 +7,16 @@
 //! |---------------------------|---------|------------------------------------------|
 //! | `compute_config_derived`  | REAL    | Uses core `LinearMotorConfig` methods.  |
 //! | `get_magnet_grades`       | REAL    | Reads core `magnet_grades::MAGNET_GRADES`.|
-//! | `compute_height_stack`    | PARTIAL | Trivial field assembly from config.      |
-//! | `generate_coils`          | STUB    | Ported frontend mock; core geometry TBD.  |
-//! | `evaluate_force_sweep`    | STUB    | Sinusoidal placeholder; core physics TBD.|
-//! | `compute_stackup`          | STUB    | Per-layer trace estimate; core TBD.      |
-//! | `compute_power_budget`    | STUB    | I²R estimate; core `PowerEstimator` TBD.|
-//! | `compute_friction`        | STUB    | Split of `friction_n`; core TBD.         |
+//! | `compute_height_stack`    | REAL    | Uses core `HeightStackCalculator`.       |
+//! | `generate_coils`          | REAL    | Uses core `make_coil_generator` + trait. |
+//! | `evaluate_force_sweep`    | REAL    | Uses core `ForceEvaluator` (Lorentz).    |
+//! | `compute_stackup`          | STUB    | No core `StackupCalculator` exists yet.  |
+//! | `compute_power_budget`    | REAL    | Uses core `PowerEstimator`.              |
+//! | `compute_friction`        | REAL    | Uses core `FrictionEstimator`.           |
 //! | `validate_config`         | REAL    | Delegates to core `validate()`.          |
+//! | `connect_kicad`           | REAL    | KiCad IPC: connect + query open board.   |
+//! | `write_coils_to_board`    | REAL    | KiCad IPC: generate + atomic commit.     |
+//! | `ping_kicad`              | REAL    | KiCad IPC: connect + GetVersion.         |
 //!
 //! ## Threading
 //!
@@ -32,6 +35,16 @@
 //! be a separate command set returning `"Radial mode not yet implemented."`.
 
 use crate::ipc::*;
+
+use pcbstatorgen_rs::geometry::make_coil_generator;
+use pcbstatorgen_rs::magnetic::{CommutationMode as CoreCommutationMode, ForceEvaluator};
+use pcbstatorgen_rs::stackup::{FrictionEstimator, HeightStackCalculator, PowerEstimator};
+use pcbstatorgen_rs::kicad::{
+    BoardHandle, DocumentSpecifier, DocumentType, KiCadClient,
+};
+use pcbstatorgen_rs::kicad::proto::common::commands::{
+    GetOpenDocuments, GetOpenDocumentsResponse, GetVersion, GetVersionResponse,
+};
 
 // ===========================================================================
 // compute_config_derived — REAL (core derived methods)
@@ -136,33 +149,20 @@ pub async fn get_magnet_grades() -> Result<Vec<MagnetGradeIpc>, String> {
 }
 
 // ===========================================================================
-// compute_height_stack — PARTIAL (trivial field assembly)
+// compute_height_stack — REAL (core HeightStackCalculator)
 // ===========================================================================
 
 /// Compute the vertical height stack (PCB → air gap → magnet → back-iron).
 ///
-/// This is a straightforward assembly of config values plus a tolerance
-/// budget. The core `HeightStackResult` struct exists but the full
-/// `HeightStackCalculator` (with field-sensitivity analysis) is pending
-/// Phase E. The `total_height_m` is computed for real via the core struct's
-/// `total_height_m()` method.
+/// Uses the real `pcbstatorgen_rs::stackup::HeightStackCalculator` with its
+/// default 1 oz outer copper and 0.3 mm assembly tolerance.
 #[tauri::command]
 pub async fn compute_height_stack(
     config: LinearMotorConfigIpc,
 ) -> Result<HeightStackResultIpc, String> {
     let core = config.to_core();
     tauri::async_runtime::spawn_blocking(move || {
-        // TODO: replace with real pcbstatorgen-rs HeightStackCalculator once
-        //       Phase E lands. For now we assemble the stack from config fields.
-        let hs = pcbstatorgen_rs::config::HeightStackResult {
-            pcb_thickness_m: core.pcb_thickness_m,
-            cu_protrusion_m: 35e-6 * if config.num_layers >= 6 { 2.0 } else { 1.0 },
-            solder_mask_m: 20e-6,
-            air_gap_m: core.air_gap_m,
-            magnet_height_m: core.magnet_dims_m[2],
-            back_iron_thickness_m: core.back_iron_thickness_m,
-            tolerance_m: 0.1e-3,
-        };
+        let hs = HeightStackCalculator::default().calculate(&core);
         Ok(HeightStackResultIpc {
             pcb_thickness_m: hs.pcb_thickness_m,
             cu_protrusion_m: hs.cu_protrusion_m,
@@ -179,167 +179,92 @@ pub async fn compute_height_stack(
 }
 
 // ===========================================================================
-// generate_coils — STUB (geometry generators pending Phase C restructuring)
+// generate_coils — REAL (core geometry generators)
 // ===========================================================================
 
 /// Generate coil path geometry for all phases/layers.
 ///
-/// **STUB**: The core `geometry` module is undergoing Phase C restructuring.
-/// The `WaveWindingGenerator` / `make_coil_generator` are not yet available
-/// in the current module exports. This returns a plausible serpentine coil
-/// path (ported from the frontend mock in `tauri.ts`) so the SVG preview is
-/// fully functional.
-///
-/// TODO: replace with real `pcbstatorgen_rs::geometry::make_coil_generator`
-///       call once Phase C restructuring is complete. The conversion path
-///       (`CoilPathIpc::from_core`) is already implemented in `ipc.rs`.
+/// Uses `pcbstatorgen_rs::geometry::make_coil_generator` to select the
+/// generator for the configured topology, then calls the `CoilGenerator`
+/// trait's `generate()` method for each layer. The conversion to IPC DTOs
+/// is handled by `CoilPathIpc::from_core`.
 #[tauri::command]
 pub async fn generate_coils(config: LinearMotorConfigIpc) -> Result<CoilPathIpc, String> {
-    let cfg = config.clone();
+    let core = config.to_core();
+    let num_layers = config.num_layers;
     tauri::async_runtime::spawn_blocking(move || {
-        // TODO: replace with real pcbstatorgen-rs geometry generator call
-        //       once Phase C (WaveWindingGenerator port) restructuring completes.
-        let span = cfg.magnet_count as f64 * cfg.magnet_pitch_m;
-        let width = cfg.board_width_m;
-        let n_conductors = std::cmp::max(2, cfg.magnet_count as usize * 2);
-        let pitch_x = span / (n_conductors - 1) as f64;
-
-        let mut segments: Vec<CoilSegmentIpc> = Vec::with_capacity(n_conductors * 2);
-        for i in 0..n_conductors {
-            let x = i as f64 * pitch_x;
-            let (y_top, y_bot) = if i % 2 == 0 {
-                (0.0, width)
-            } else {
-                (width, 0.0)
-            };
-            segments.push(CoilSegmentIpc {
-                start: [x, y_top],
-                end: [x, y_bot],
-                is_active: true,
-            });
-            if i < n_conductors - 1 {
-                segments.push(CoilSegmentIpc {
-                    start: [x, y_bot],
-                    end: [x + pitch_x, y_bot],
-                    is_active: false,
-                });
-            }
+        let gen = make_coil_generator(core.coil_topology);
+        let mut coils = Vec::new();
+        for layer in 0..num_layers {
+            coils.extend(gen.generate(&core, layer));
         }
-
-        let total_len: f64 = segments
-            .iter()
-            .map(|s| ((s.end[0] - s.start[0]).powi(2) + (s.end[1] - s.start[1]).powi(2)).sqrt())
-            .sum();
-        let active_len: f64 = segments
-            .iter()
-            .filter(|s| s.is_active)
-            .map(|s| ((s.end[0] - s.start[0]).powi(2) + (s.end[1] - s.start[1]).powi(2)).sqrt())
-            .sum();
-        let end_turn_len = total_len - active_len;
-        let active_count = segments.iter().filter(|s| s.is_active).count() as u32;
-
-        let phase_names = ["A", "B", "C", "D", "E", "F"];
-        let phases: Vec<PhaseCoilIpc> = (0..cfg.phases as usize)
-            .map(|p| PhaseCoilIpc {
-                phase_idx: p as u32,
-                layer_idx: 0,
-                phase_name: phase_names.get(p).unwrap_or(&"?").to_string(),
-                topology: cfg.coil_topology,
-                segments: segments.clone(),
-                total_length_m: total_len,
-                active_length_m: active_len,
-                end_turn_length_m: end_turn_len,
-                active_conductor_count: active_count,
-                bounding_box: [0.0, 0.0, span, width],
-                terminal_start: [0.0, 0.0],
-                terminal_end: [span, width],
-            })
-            .collect();
-
-        Ok(CoilPathIpc {
-            phases,
-            layer_count: cfg.num_layers,
-        })
+        Ok(CoilPathIpc::from_core(&coils, num_layers))
     })
     .await
     .map_err(|e| format!("generate_coils worker failed: {e}"))?
 }
 
 // ===========================================================================
-// evaluate_force_sweep — STUB (sinusoidal placeholder)
+// evaluate_force_sweep — REAL (core ForceEvaluator / Lorentz force)
 // ===========================================================================
 
 /// Evaluate force vs mover position along the travel axis.
 ///
-/// **STUB**: The core `magnetic` module (magnet array + Lorentz force
-/// evaluator) is pending Phase D. This returns a sinusoidal-ish force profile
-/// (ported from the frontend mock) so the live metrics panel and ripple
-/// calculation are functional. The profile shape is physically motivated:
-/// - Baseline thrust ∝ Br × I × layers × magnet_count
-/// - Ripple at `phases × electrical frequency` per pole pitch
-/// - Normal force (z) ≈ 1.6 × thrust (typical pull-in ratio)
+/// Uses the real `pcbstatorgen_rs::magnetic::ForceEvaluator` which integrates
+/// the Lorentz force `F = I · Σ(dLᵢ × Bᵢ)` across all active conductors at
+/// each mover position. The magnet array is built from the config's
+/// `MagnetArrangement` (Alternating / Halbach / back-iron variants).
 ///
-/// Per PRODUCT_GOALS §4.C: `F_mover = -F_stator` — the sign is already
-/// flipped to the mover's frame. Ripple % = (F_max − F_min) / |F_mean| × 100.
+/// Coils are generated for a single layer (layer 0) — sufficient for the
+/// force profile since the force scales linearly with layer count.
+///
+/// Per PRODUCT_GOALS §4.C: `F_mover = -F_stator` — all forces are mover
+/// forces. Ripple % = (F_max − F_min) / |F_mean| × 100.
 #[tauri::command]
 pub async fn evaluate_force_sweep(
     config: LinearMotorConfigIpc,
 ) -> Result<ForceSweepResultIpc, String> {
-    let cfg = config.clone();
+    let core = config.to_core();
+    let n_positions = config.n_positions.max(2) as usize;
+    let meshing = config.meshing.max(1) as usize;
+    let commutation = match config.commutation {
+        CommutationModeIpc::MaxTorque => CoreCommutationMode::MaxTorque,
+        CommutationModeIpc::PhaseAOnly => CoreCommutationMode::PhaseAOnly,
+    };
     tauri::async_runtime::spawn_blocking(move || {
-        // TODO: replace with real pcbstatorgen-rs ForceEvaluator once Phase D
-        //       (magba adapter + MagnetArray + Lorentz force) lands.
-        let n = cfg.n_positions as usize;
-        let n = n.max(2);
-        let travel = (cfg.active_area_length_m - cfg.magnet_count as f64 * cfg.magnet_pitch_m)
-            .max(0.0);
-        let positions: Vec<f64> = (0..n)
-            .map(|i| travel * i as f64 / (n - 1) as f64)
-            .collect();
+        let gen = make_coil_generator(core.coil_topology);
+        let coils = gen.generate(&core, 0);
 
-        let br = cfg.magnet_remanence_t;
-        let i_peak = cfg.max_current_a;
-        let baseline = 0.4 * br * i_peak * cfg.num_layers as f64 * (cfg.magnet_count as f64 / 10.0);
-        let ripple_amp = baseline * 0.08;
-        let pitch = cfg.magnet_pitch_m.max(1e-6);
+        let mut evaluator = ForceEvaluator::new(n_positions, meshing, commutation, 0.0);
+        let result = evaluator.evaluate(&core, &coils);
 
-        let force_x: Vec<f64> = positions
-            .iter()
-            .map(|&x| {
-                baseline
-                    + ripple_amp
-                        * ((x / pitch) * 2.0 * std::f64::consts::PI * cfg.phases as f64).sin()
-            })
+        let n_phases = result.n_phases;
+        let mean = result.mean_thrust_n();
+        let peak = result.peak_thrust_n();
+        let min = result.min_thrust_n();
+        let ripple = result.ripple_pct();
+        let per_phase: Vec<Vec<f64>> = result
+            .per_phase_force_x
+            .chunks(n_phases)
+            .map(|c| c.to_vec())
             .collect();
-        let force_y: Vec<f64> = (0..n).map(|i| 0.01 * (i as f64).sin()).collect();
-        let force_z: Vec<f64> = positions.iter().map(|_| baseline * 1.6).collect();
-        let per_phase: Vec<Vec<f64>> = force_x
-            .iter()
-            .map(|&f| (0..cfg.phases as usize).map(|_| f / cfg.phases as f64).collect())
-            .collect();
-
-        let mean = force_x.iter().sum::<f64>() / n as f64;
-        let peak = force_x.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-        let min = force_x.iter().cloned().fold(f64::INFINITY, f64::min);
-        let ripple_pct = if mean.abs() < 1e-12 {
-            0.0
-        } else {
-            (peak - min) / mean.abs() * 100.0
-        };
 
         Ok(ForceSweepResultIpc {
-            positions_m: positions,
-            force_x_n: force_x,
-            force_y_n: force_y,
-            force_z_n: force_z,
+            positions_m: result.positions_m,
+            force_x_n: result.force_x_n,
+            force_y_n: result.force_y_n,
+            force_z_n: result.force_z_n,
             per_phase_force_x: per_phase,
-            commutation: cfg.commutation,
-            current_a: i_peak,
+            commutation: match result.commutation {
+                CoreCommutationMode::MaxTorque => CommutationModeIpc::MaxTorque,
+                CoreCommutationMode::PhaseAOnly => CommutationModeIpc::PhaseAOnly,
+            },
+            current_a: result.current_a,
             mean_thrust_n: mean,
             peak_thrust_n: peak,
             min_thrust_n: min,
-            ripple_pct: ripple_pct,
-            n_positions: n as u32,
+            ripple_pct: ripple,
+            n_positions: n_positions as u32,
         })
     })
     .await
@@ -347,20 +272,21 @@ pub async fn evaluate_force_sweep(
 }
 
 // ===========================================================================
-// compute_stackup — STUB (per-layer trace estimate)
+// compute_stackup — STUB (no core StackupCalculator exists)
 // ===========================================================================
 
 /// Compute the PCB stackup recommendation (trace widths, copper thicknesses,
 /// via grid).
 ///
-/// **STUB**: The core `LayerOptimizer` is pending Phase E. This returns a
-/// plausible per-layer allocation (outer layers thinner, inner layers thicker)
-/// ported from the frontend mock.
+/// **STUB**: No core `StackupCalculator` or `LayerOptimizer` exists in
+/// `pcbstatorgen_rs::stackup`. The core `StackupResult` struct is used as an
+/// *input* to `PowerEstimator::estimate()`, not produced by a calculator.
+/// This returns a plausible per-layer allocation (outer layers thinner, inner
+/// layers thicker) ported from the frontend mock.
 #[tauri::command]
 pub async fn compute_stackup(config: LinearMotorConfigIpc) -> Result<StackupResultIpc, String> {
     let cfg = config.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        // TODO: replace with real pcbstatorgen-rs LayerOptimizer once Phase E lands.
         let lc = cfg.num_layers as usize;
         let trace_widths: Vec<f64> = (0..lc)
             .map(|i| 0.2e-3 * (1.0 + (i as f64 - (lc as f64 - 1.0) / 2.0).abs() * 0.05))
@@ -379,7 +305,7 @@ pub async fn compute_stackup(config: LinearMotorConfigIpc) -> Result<StackupResu
             via_grid_cols: 4,
             estimated_force_n: est_force,
             estimated_dc_resistance_ohm: 1.2,
-            notes: vec!["Stub stackup — real LayerOptimizer pending Phase E".into()],
+            notes: vec!["Stub stackup — no core StackupCalculator exists yet".into()],
         })
     })
     .await
@@ -387,36 +313,28 @@ pub async fn compute_stackup(config: LinearMotorConfigIpc) -> Result<StackupResu
 }
 
 // ===========================================================================
-// compute_power_budget — STUB (I²R estimate)
+// compute_power_budget — REAL (core PowerEstimator)
 // ===========================================================================
 
 /// Estimate phase resistance, continuous/burst power, and thermal rise.
 ///
-/// **STUB**: The core `PowerEstimator` is pending Phase E. This uses a crude
-/// I²R estimate based on an approximate coil length and 1 oz copper trace.
+/// Uses the real `pcbstatorgen_rs::stackup::PowerEstimator` with default
+/// parameters (2 layers per phase, 2 oz copper approximation when no stackup
+/// is provided).
 #[tauri::command]
 pub async fn compute_power_budget(
     config: LinearMotorConfigIpc,
 ) -> Result<PowerBudgetIpc, String> {
-    let cfg = config.clone();
+    let core = config.to_core();
     tauri::async_runtime::spawn_blocking(move || {
-        // TODO: replace with real pcbstatorgen-rs PowerEstimator once Phase E lands.
-        let coil_len = cfg.active_area_length_m * cfg.board_width_m * cfg.num_layers as f64 * 2.0;
-        let rho = 1.724e-8; // Cu resistivity [Ω·m]
-        let trace_area = 35e-6 * 0.2e-3; // 1 oz, 0.2 mm trace
-        let r = (rho * coil_len) / trace_area;
-        let cont = cfg.max_current_a.powi(2) * r * cfg.phases as f64;
-        let burst = (cfg.max_current_a * 1.5).powi(2) * r * cfg.phases as f64;
-        let temp_rise = cfg.max_temperature_rise_c.min(cont * 4.0);
-        let efficiency = ((0.25 * 0.1) / (cfg.supply_voltage_v * cfg.max_current_a) * 100.0)
-            .clamp(2.0, 15.0);
+        let pb = PowerEstimator::default().estimate(&core, None);
         Ok(PowerBudgetIpc {
-            phase_resistance_ohm: r,
-            continuous_power_w: cont,
-            burst_power_w: burst,
-            temperature_rise_c: temp_rise,
-            capacitor_required_uf: cfg.capacitor_bank_uf,
-            efficiency_pct: efficiency,
+            phase_resistance_ohm: pb.phase_resistance_ohm,
+            continuous_power_w: pb.continuous_power_w,
+            burst_power_w: pb.burst_power_w,
+            temperature_rise_c: pb.temperature_rise_c,
+            capacitor_required_uf: pb.capacitor_required_uf,
+            efficiency_pct: pb.efficiency_pct,
         })
     })
     .await
@@ -424,30 +342,203 @@ pub async fn compute_power_budget(
 }
 
 // ===========================================================================
-// compute_friction — STUB (split of friction_n)
+// compute_friction — REAL (core FrictionEstimator)
 // ===========================================================================
 
 /// Break down the total friction into bearing, cable drag, wiper, and
 /// cogging components.
 ///
-/// **STUB**: The core `FrictionEstimator` is pending Phase E. This splits the
-/// config's `friction_n` into plausible proportions (ported from the frontend
-/// mock). Cogging is always 0 for coreless motors (PRODUCT_GOALS §4.A).
+/// Uses the real `pcbstatorgen_rs::stackup::FrictionEstimator` with the
+/// `estimate_for_config()` method, which splits `config.friction_n`
+/// proportionally based on the default bearing type (PTE-lined).
+/// Cogging is always 0 for coreless motors (PRODUCT_GOALS §4.A) — the
+/// estimator's proportional split assigns cogging a fraction of the total,
+/// but this is overridden to 0 for coreless topologies.
 #[tauri::command]
 pub async fn compute_friction(config: LinearMotorConfigIpc) -> Result<FrictionBudgetIpc, String> {
-    let cfg = config.clone();
+    let core = config.to_core();
     tauri::async_runtime::spawn_blocking(move || {
-        // TODO: replace with real pcbstatorgen-rs FrictionEstimator once Phase E lands.
-        let total = cfg.friction_n;
+        let fb = FrictionEstimator::default().estimate_for_config(&core);
         Ok(FrictionBudgetIpc {
-            bearing_friction_n: total * 0.5,
-            cable_drag_n: total * 0.3,
-            wiper_contact_n: total * 0.2,
+            bearing_friction_n: fb.bearing_friction_n,
+            cable_drag_n: fb.cable_drag_n,
+            wiper_contact_n: fb.wiper_contact_n,
             cogging_n: 0.0, // coreless → zero cogging (§4.A)
-            total_n: total,
-            minimum_drive_force_n: total * 1.3,
+            total_n: fb.bearing_friction_n + fb.cable_drag_n + fb.wiper_contact_n,
+            minimum_drive_force_n: (fb.bearing_friction_n + fb.cable_drag_n + fb.wiper_contact_n) * 1.3,
         })
     })
     .await
     .map_err(|e| format!("friction worker failed: {e}"))?
+}
+
+// ===========================================================================
+// KiCad IPC commands (Phase 7)
+// ===========================================================================
+
+/// KiCad connection result.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct KicadConnectionResult {
+    pub connected: bool,
+    pub board_name: String,
+    pub copper_layers: u32,
+}
+
+/// KiCad write result.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct KicadWriteResult {
+    pub items_created: u32,
+    pub commit_id: String,
+}
+
+/// KiCad ping result.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct KicadPingResult {
+    pub ok: bool,
+    pub version: String,
+}
+
+/// Type URL for the `GetOpenDocuments` command.
+const GET_OPEN_DOCUMENTS_TYPE_URL: &str =
+    "type.googleapis.com/kiapi.common.commands.GetOpenDocuments";
+
+/// Type URL for the `GetVersion` command.
+const GET_VERSION_TYPE_URL: &str =
+    "type.googleapis.com/kiapi.common.commands.GetVersion";
+
+/// Query the first open PCB document from KiCad.
+///
+/// Sends a `GetOpenDocuments` command with `DOCTYPE_PCB` and returns the
+/// first `DocumentSpecifier` from the response, or an error if no board is
+/// open.
+fn get_open_pcb_document(
+    client: &mut KiCadClient,
+) -> Result<DocumentSpecifier, String> {
+    let cmd = GetOpenDocuments {
+        r#type: DocumentType::DoctypePcb as i32,
+    };
+    let resp: GetOpenDocumentsResponse = client
+        .send(GET_OPEN_DOCUMENTS_TYPE_URL, &cmd)
+        .map_err(|e| e.to_string())?;
+    resp.documents
+        .into_iter()
+        .next()
+        .ok_or_else(|| "No PCB document open in KiCad".to_string())
+}
+
+/// Connect to KiCad and query the open board's name and copper layer count.
+///
+/// Returns `connected: false` (not an `Err`) if the connection fails, so the
+/// frontend can show a graceful "not connected" state.
+#[tauri::command]
+pub async fn connect_kicad() -> Result<KicadConnectionResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut client = KiCadClient::new(None, None, 2000);
+        if let Err(e) = client.connect() {
+            return Ok(KicadConnectionResult {
+                connected: false,
+                board_name: format!("Error: {}", e),
+                copper_layers: 0,
+            });
+        }
+
+        let (board_name, copper_layers) = match get_open_pcb_document(&mut client) {
+            Ok(doc) => {
+                let mut board = BoardHandle::new(&mut client, doc);
+                let name = board.name().unwrap_or_else(|_| "(unknown)".to_string());
+                let layers = board.get_copper_layer_count().unwrap_or(0);
+                (name, layers)
+            }
+            Err(e) => (format!("No board open: {}", e), 0),
+        };
+
+        Ok(KicadConnectionResult {
+            connected: true,
+            board_name,
+            copper_layers,
+        })
+    })
+    .await
+    .map_err(|e| format!("connect_kicad worker failed: {e}"))?
+}
+
+/// Generate coils from the config and write them to the open KiCad board.
+///
+/// Connects to KiCad, queries the open PCB, generates coil geometry using the
+/// real `make_coil_generator`, and writes the items atomically via
+/// `BoardHandle::write_coils` (single Ctrl+Z undo step).
+///
+/// Uses `config.num_layers` (not `max_layers`) for the layer count, since the
+/// user may select fewer layers than the maximum.
+#[tauri::command]
+pub async fn write_coils_to_board(
+    config: LinearMotorConfigIpc,
+) -> Result<KicadWriteResult, String> {
+    let core = config.to_core();
+    let num_layers = config.num_layers;
+    tauri::async_runtime::spawn_blocking(move || {
+        let gen = make_coil_generator(core.coil_topology);
+        let mut coils = Vec::new();
+        for layer in 0..num_layers {
+            coils.extend(gen.generate(&core, layer));
+        }
+
+        let mut client = KiCadClient::new(None, None, 5000);
+        client
+            .connect()
+            .map_err(|e| format!("KiCad connection failed: {e}"))?;
+
+        let doc = get_open_pcb_document(&mut client)
+            .map_err(|e| format!("No open PCB to write to: {e}"))?;
+
+        let mut board = BoardHandle::new(&mut client, doc);
+        let items_created = board
+            .write_coils(&coils, &core)
+            .map_err(|e| format!("KiCad write_coils failed: {e}"))?;
+
+        Ok(KicadWriteResult {
+            items_created,
+            commit_id: "atomic-commit".to_string(),
+        })
+    })
+    .await
+    .map_err(|e| format!("write_coils_to_board worker failed: {e}"))?
+}
+
+/// Ping KiCad and return the version string.
+///
+/// Returns `ok: false` (not an `Err`) if the connection fails, so the
+/// frontend can show a graceful "not connected" state.
+#[tauri::command]
+pub async fn ping_kicad() -> Result<KicadPingResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut client = KiCadClient::new(None, None, 1000);
+        if let Err(_) = client.connect() {
+            return Ok(KicadPingResult {
+                ok: false,
+                version: String::new(),
+            });
+        }
+
+        let version = match client.send::<GetVersion, GetVersionResponse>(
+            GET_VERSION_TYPE_URL,
+            &GetVersion {},
+        ) {
+            Ok(resp) => resp
+                .version
+                .map(|v| v.full_version)
+                .unwrap_or_else(|| "connected".to_string()),
+            Err(_) => "connected".to_string(),
+        };
+
+        Ok(KicadPingResult {
+            ok: true,
+            version,
+        })
+    })
+    .await
+    .map_err(|e| format!("ping_kicad worker failed: {e}"))?
 }

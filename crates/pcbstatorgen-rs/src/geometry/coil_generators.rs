@@ -1,6 +1,5 @@
 //! Concentrated, Rhombic, and Spiral coil generators.
 //!
-//! Ports `pcbstatorgen/geometry/coil_generators.py`.
 //! All produce [`PhaseCoil`] objects consumed identically by the force model.
 
 use crate::config::{CoilTopology, LinearMotorConfig};

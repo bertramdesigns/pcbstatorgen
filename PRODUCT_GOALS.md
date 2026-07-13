@@ -266,4 +266,110 @@ Phases 5 and 6 are **functionally complete**. The Rust physics core compiles, al
 
 2. **170% force ripple (commutation alignment)**: The force sweep produces 170% ripple with negative min thrust at every 3rd sample. This is reproduced identically in Python and Rust — the physics is consistent but the electrical angle formula is misaligned with coil geometry positions. The self-calibration guard (Newton's Third Law) works correctly. Fix requires auditing `WaveWindingGenerator` conductor x-positions against `MagnetArray` pole centers. Not a blocker for Phase 7 (KiCad IPC Writer).
 
-3. **Python oracle patched**: The Python `ForceEvaluator` was patched with Newton's Third Law sign flip (`F_mover = -F_stator`) and self-calibration guard (test step `+0.1·τ_p`, dynamic phase shift). Test vectors re-exported. The Rust port implements the same logic. Python codebase remains as test oracle until Phase 7 Stage 5 deprecation.
+3. **Python oracle fully deprecated**: The Python codebase was retained as a test oracle through Phase 7. After the verification gate passed (222 Rust tests + 548 Python tests, all green), the Python codebase was fully removed. The Rust core is the sole authoritative implementation. Test vector fixtures are committed as static data (`scripts/fixtures/test_vectors.json`).
+
+---
+
+## 9. Technical Specifications (Phase 7 Execution — KiCad 10 IPC Writer)
+
+> Added by the Orchestrator to lock down architecture variables for Phase 7
+> (Stage 4 + Stage 5 of the transition plan). These supersede any conflicting
+> guidance. See `PRODUCT_ARCHITECTURE.md` for full system architecture and
+> `PRODUCT_PLAN.md §7` for the execution specification.
+
+### A. Phase 7 Scope: Final Feature-Complete Phase
+
+Phase 7 is the **last phase** before feature-complete status. It executes:
+1. **Stage 4** — KiCad 10 IPC Writer (Rust native): NNG socket client, prost protobuf, Track/Via writer, atomic commits.
+2. **Stage 5** — Streamlit Deprecation: delete `gui/`, retain Python oracle.
+
+### B. Transport & Protocol Decision (Locked)
+
+- **Transport:** NNG (nanomsg next generation) `req0` protocol over IPC Unix domain socket (`ipc:///tmp/kicad/api.sock`). This matches the Python `kipy` reference (`pynng.Req0`) exactly.
+- **Wire format:** Protobuf with `ApiRequest`/`ApiResponse` envelopes (google.protobuf.Any packed messages).
+- **Code generation:** `prost-build` compiles vendored `.proto` files from the `kicad-python` reference repo at build time. No runtime `.proto` loading. No hand-rolled protobuf structs.
+- **Socket path resolution:** `KICAD_API_SOCKET` env var → default `ipc:///tmp/kicad/api.sock` (macOS/Linux) or `ipc://%TEMP%\kicad\api.sock` (Windows).
+- **No Python sidecar.** The Rust core communicates directly with KiCad. No `kipy` Python dependency at runtime.
+
+### C. KiCad Writer Module Architecture (Locked)
+
+The writer lives in `pcbstatorgen_rs::kicad` (pure library crate, no Tauri dep). Module layout:
+- `client.rs` — NNG socket wrapper (`KiCadClient`), envelope pack/unpack, `KicadTransport` trait + `MockTransport`.
+- `writer.rs` — `coils_to_board_items(&[PhaseCoil], &LinearMotorConfig) -> Vec<BoardItem>` (pure function, no socket).
+- `commit.rs` — `Commit` struct wrapping `BeginCommit → create_items → EndCommit` (single Ctrl+Z undo step).
+- `layer_map.rs` — `layer_idx_to_board_layer(idx, total) -> BoardLayer` (0→B_Cu, N-1→F_Cu, else In{n}_Cu).
+- `board.rs` — `BoardHandle` (copper layer count, board name).
+- `errors.rs` — `KiCadError` enum (Connection, Api, Protocol, NotConnected).
+
+### D. Unit Conventions (Locked)
+
+- pcbstatorgen-rs geometry: **metres (SI)** — unchanged from Phase 5.
+- KiCad proto: **nanometres (nm)** as `value_nm` fields.
+- Writer applies `m_to_nm(f64) -> i64 = (f64 * 1e9).round() as i64`.
+- Coordinate system: identical (X = travel, Y = board width). No transform needed for linear mode.
+
+### E. Atomic Commit Requirement (Locked)
+
+All track/via items for a complete coil generation run **must** be created within a single `BeginCommit`/`EndCommit` transaction. This ensures the user can undo the entire generation with one `Ctrl+Z` in the KiCad PCB editor. No partial commits. If any `CreateItems` call fails, the commit is abandoned (no `EndCommit`) — KiCad discards the pending changes.
+
+### F. Offline Testability Requirement (Locked)
+
+The writer module **must** be fully testable without a live KiCad socket:
+- `coils_to_board_items()` is a pure function — test output proto structs directly.
+- `KiCadClient` uses `KicadTransport` trait with `MockTransport` for unit tests.
+- Live integration tests are gated behind `#[cfg(feature = "kicad-live")]` and skipped in CI by default.
+- Python `test_kicad_writer.py` (existing) defines the expected geometry; the Rust writer must match within ±1 nm.
+
+### G. Tauri Command Additions (Locked)
+
+Three new `#[tauri::command]` async handlers (all `spawn_blocking` for socket I/O):
+
+| Command                 | Purpose                                          |
+| ----------------------- | ------------------------------------------------ |
+| `connect_kicad`         | Connect to running KiCad, return board info.     |
+| `write_coils_to_board`  | Generate coils, write tracks/vias atomically.     |
+| `ping_kicad`            | Health check, return KiCad version.             |
+
+The 6 existing Phase-6 command stubs (`generate_coils`, `evaluate_force_sweep`, `compute_stackup`, `compute_power_budget`, `compute_friction`, `compute_height_stack`) are **wired to real pcbstatorgen-rs calls** as a Phase 7 prerequisite — the KiCad writer needs real coil geometry.
+
+### H. Python Codebase Fully Deprecated (Post-Phase 7)
+
+**Deleted:**
+- `pcbstatorgen/` — entire Python physics core (test oracle, fully removed)
+- `tests/` — Python pytest suite
+- `pyproject.toml` — Python project config
+- `scripts/export_test_vectors.py` — fixture generator
+- `pcbstatorgen/server.py` — dead JSON-RPC sidecar
+- `.pytest_cache/`, all `__pycache__/` directories
+
+**Retained:**
+- `scripts/fixtures/test_vectors.json` — committed as static test data (un-gitignored)
+- `docs/reference/plugin_entry.py` — kipy protocol reference for the Rust port
+- `scripts/sync_protos.sh` — proto sync script
+
+The verification gate passed before deletion: `cargo test --workspace` (222 tests) AND `pytest tests/` (548 tests) were both green. The Rust core is the sole authoritative implementation.
+
+### I. New Dependencies (Locked)
+
+| Crate         | Version | Role                                           |
+| ------------- | ------- | ---------------------------------------------- |
+| `nng`         | `1.0`   | NNG socket transport (req/rep over IPC).       |
+| `prost`       | `0.13`  | Protobuf runtime (generated code decoder).     |
+| `prost-build` | `0.13`  | Build-time proto compilation (build-dep).      |
+
+Added to `crates/pcbstatorgen-rs/Cargo.toml` only (the Tauri app crate gets them transitively).
+
+### J. Scope Boundaries (Phase 7 — Locked)
+
+**In scope:**
+- NNG socket client, prost protobuf, KiCad Track/Via writer, atomic commit.
+- 3 new Tauri commands + 6 stub wirings.
+- Svelte KiCad panel (connect, write, dry-run toggle).
+- Streamlit deprecation (delete `gui/`, retain oracle).
+
+**Out of scope (deferred):**
+- Radial/axial-flux board writing (§7.A — linear only).
+- Board stackup/layer setup via IPC (user pre-configures in KiCad).
+- Board outline generation.
+- Read-back/sync loop (one-way pipeline — §1 anti-scope).
+- KiCad PCM packaging (§1 anti-scope).

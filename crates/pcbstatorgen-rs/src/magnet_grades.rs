@@ -1,4 +1,4 @@
-//! NdFeB magnet grade → remanence lookup. Ports `pcbstatorgen/magnet_grades.py`.
+//! NdFeB magnet grade → remanence lookup.
 //!
 //! Data source: PRODUCT_GOALS.md §3.C.
 

@@ -224,3 +224,23 @@ export function getRemanence(grade: string): number {
   const base = extractBaseGrade(grade);
   return MAGNET_GRADES[base].br_typ_t;
 }
+
+// ---------------------------------------------------------------------------
+// KiCad IPC API (connect_kicad / write_coils_to_board / ping_kicad)
+// ---------------------------------------------------------------------------
+
+export interface KicadConnection {
+  connected: boolean;
+  board_name: string;
+  copper_layers: number;
+}
+
+export interface KicadWriteResult {
+  items_created: number;
+  commit_id: string;
+}
+
+export interface KicadPingResult {
+  ok: boolean;
+  version: string;
+}

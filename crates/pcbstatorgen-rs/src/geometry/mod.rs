@@ -1,4 +1,4 @@
-//! Coil path generators. Ports `pcbstatorgen/geometry/`.
+//! Coil path generators.
 //!
 //! ## Module layout
 //! - [`wave_winding`] — `CoilSegment`, `PhaseCoil`, `WaveWindingGenerator`,

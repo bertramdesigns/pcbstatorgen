@@ -21,6 +21,9 @@ fn main() {
             commands::compute_stackup,
             commands::compute_power_budget,
             commands::compute_friction,
+            commands::connect_kicad,
+            commands::write_coils_to_board,
+            commands::ping_kicad,
         ])
         .run(tauri::generate_context!())
         .expect("error while running pcbstatorgen tauri application");
