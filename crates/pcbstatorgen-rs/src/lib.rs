@@ -10,10 +10,13 @@
 //! - [`magnetic`] — magnet arrays, coil current model, force/torque evaluator
 //! - [`physics`] — thin adapter over `magba` (insulates from API breaks)
 //! - [`stackup`] — height stack, power budget, friction budget
+//! - [`foc_spec`] — FOC (field-oriented control) spec stub, awaiting
+//!   the `@pcb-motor-expert` rewrite.
 //!
 //! Linear mode only. Radial/axial-flux remains a stub (see PRODUCT_GOALS.md §7.A).
 
 pub mod config;
+pub mod foc_spec;
 pub mod geometry;
 pub mod kicad;
 pub mod magnetic;

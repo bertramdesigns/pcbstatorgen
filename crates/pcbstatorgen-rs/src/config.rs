@@ -11,6 +11,14 @@ use serde::{Deserialize, Serialize};
 /// Safety margin for minimum drive force calculation.
 const SAFETY_MARGIN: f64 = 1.3;
 
+/// Default value for `num_layers` when the field is absent during serde
+/// deserialisation (e.g. legacy JSON payloads from before the field was
+/// added). Chosen to match the UI's typical 4-layer selection so the
+/// validator does not spuriously fire on a 4-layer board.
+fn default_num_layers() -> u32 {
+    4
+}
+
 // ---------------------------------------------------------------------------
 // Enums
 // ---------------------------------------------------------------------------
@@ -109,6 +117,17 @@ pub struct LinearMotorConfig {
     pub min_via_annular_ring_m: f64,
     /// Maximum copper layer count (must be even).
     pub max_layers: u32,
+    /// User-selected copper layer count (UI-controlled). Defaults to
+    /// `max_layers` when the caller does not specify it (e.g. when
+    /// deserialising configs that pre-date this field). The user may choose
+    /// a value ≤ `max_layers` to use fewer copper layers than the DFM upper
+    /// limit (e.g. a 4-layer user selection on a 12-layer-capable board).
+    ///
+    /// This is the value the `validate_write_preconditions` checks against
+    /// the live board's `copper_layer_count` — NOT `max_layers`, which is
+    /// the DFM upper bound, not the actual write target.
+    #[serde(default = "default_num_layers")]
+    pub num_layers: u32,
     /// Nominal electrical drive frequency for skin-depth [Hz].
     pub drive_frequency_hz: f64,
     /// Maximum acceptable PCB temperature rise [°C].
@@ -158,6 +177,11 @@ impl Default for LinearMotorConfig {
             min_via_drill_m: mm(0.2),
             min_via_annular_ring_m: mm(0.1),
             max_layers: 12,
+            // User's actual layer selection. Default to the UI's typical
+            // 4-layer choice rather than the DFM upper limit so that
+            // `validate_write_preconditions` does not warn against a
+            // 4-layer board when the user has not yet narrowed the field.
+            num_layers: 4,
             drive_frequency_hz: 500.0,
             max_temperature_rise_c: 20.0,
             target_force_n: 0.5,
@@ -315,6 +339,18 @@ impl LinearMotorConfig {
                 self.max_layers
             )));
         }
+        if self.num_layers < 2 || self.num_layers % 2 != 0 {
+            return Err(ConfigError(format!(
+                "num_layers must be an even number ≥ 2, got {}",
+                self.num_layers
+            )));
+        }
+        if self.num_layers > self.max_layers {
+            return Err(ConfigError(format!(
+                "num_layers ({}) must be ≤ max_layers ({})",
+                self.num_layers, self.max_layers
+            )));
+        }
         if self.drive_frequency_hz <= 0.0 {
             return Err(ConfigError(format!(
                 "drive_frequency_hz must be positive, got {}",
@@ -421,6 +457,20 @@ impl LinearMotorConfig {
     /// Coil slot pitch = (pole_pitch / phases) × spacing_ratio [m].
     pub fn slot_pitch_m(&self) -> f64 {
         (self.pole_pitch_m() / self.phases as f64) * self.spacing_ratio
+    }
+
+    /// Vernier rest offset: phase offset between a coil center and the
+    /// nearest pole center [m].
+    ///
+    /// This is the position the mover settles at with zero drive current
+    /// when a Vernier spacing ratio is used. At `spacing_ratio = 1.0` the
+    /// offset is zero (mover rests directly over a coil at zero current).
+    /// At `spacing_ratio = 0.8` (a 4:5 Vernier) the offset is
+    /// `0.2 × (pole_pitch / phases)`, i.e. the mover rests between coils.
+    /// Clamped to `[0, pole_pitch]`.
+    pub fn rest_offset_m(&self) -> f64 {
+        ((self.pole_pitch_m() / self.phases as f64) * (1.0 - self.spacing_ratio))
+            .clamp(0.0, self.pole_pitch_m())
     }
 
     /// Gap between adjacent magnets [m]: `magnet_pitch - magnet_width`.
@@ -1035,6 +1085,34 @@ mod tests {
         let cfg = default_config();
         let expected = cfg.magnet_pitch_m / 3.0;
         assert!((cfg.slot_pitch_m() - expected).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_rest_offset_zero_at_unity_ratio() {
+        // spacing_ratio = 1.0 → rest offset is exactly 0.
+        let cfg = default_config();
+        assert_eq!(cfg.rest_offset_m(), 0.0);
+    }
+
+    #[test]
+    fn test_rest_offset_vernier_4_5() {
+        // 4:5 Vernier (spacing_ratio = 0.8) → offset = 0.2 × (pole_pitch / phases).
+        let cfg = LinearMotorConfig {
+            spacing_ratio: 0.8,
+            ..default_config()
+        };
+        let expected = 0.2 * (cfg.pole_pitch_m() / cfg.phases as f64);
+        assert!((cfg.rest_offset_m() - expected).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_rest_offset_clamped_at_zero() {
+        // spacing_ratio > 1.0 → formula goes negative, clamp pins it to 0.
+        let cfg = LinearMotorConfig {
+            spacing_ratio: 1.5,
+            ..default_config()
+        };
+        assert_eq!(cfg.rest_offset_m(), 0.0);
     }
 
     #[test]

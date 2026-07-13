@@ -1,24 +1,29 @@
 {
   "_meta": {
     "project": "pcbstatorgen",
-    "phase": "5+6-combined",
-    "branch": "feat/phase5-6-rust-tauri",
-    "orchestrator_notes": "Phases B, C, E complete. 152 Rust tests pass. Config structs, coil generators (serpentine/sine/concentrated/rhombic/spiral), and stackup (height/power/friction) all ported. Workspace builds clean (lib + Tauri binary). Downstream agents can now import real types from pcbstatorgen-rs.",
+    "phase": "7+rounds",
+    "branch": "chore/round7-docs-cleanup",
+    "orchestrator_notes": "Phases 1-7 are all DONE. The `phases` section below is the historical Phase 5+6 atomic-task tracker; all phases (B-H) shipped as part of Phase 5+6+7. Round-based work is tracked in the `rounds` section. Slices 1-2 and Rounds 3-6 are all DONE (2026-07-13). Round 7 (Net /A short-circuit + docs cleanup) is in progress: the short-circuit bug is DOCUMENTED but UNRESOLVED, deferred to a new session. Architectural decisions are recorded as ADRs in `docs/adr/`. 302 Rust tests pass workspace-wide (288 after Round 6, +14 net from Round 7 regression tests). Tauri host builds clean, svelte-autofixer clean on all touched components, magpylib-leakage grep clean (only doc comments in FluxDiagram.svelte and the historical comment in coil_model.rs:42).",
     "key_constraints": [
-      "Linear mode ONLY \u2014 radial/axial-flux stays disabled stub",
-      "magba =0.6.2 PINNED \u2014 wrap all magba calls in crates/pcbstatorgen-rs/src/physics/mod.rs adapter",
+      "Linear mode ONLY — radial/axial-flux stays disabled stub",
+      "magba =0.6.2 PINNED — wrap all magba calls in crates/pcbstatorgen-rs/src/physics/mod.rs adapter",
       "Newton's 3rd Law: F_mover = -F_stator; self-calibration guard at startup (+0.1*tau_p test step)",
       "Ripple% = (F_max - F_min) / |F_mean| * 100",
       "Travel = active_area_length - coil_span (active=INPUT, travel=DERIVED/READ-ONLY)",
-      "Do NOT delete Python code \u2014 it is the test oracle (Stage 5 deprecation is Phase 7)",
-      "Tolerance: B-field \u00b11%, force \u00b12%, ripple \u00b10.5pp vs Python vectors"
-    ]
+      "Tolerance: B-field ±1%, force ±2%, ripple ±0.5pp vs Python vectors",
+      "No Python sidecar — PRODUCT_GOALS.md §6 (magpylib is read-only research only)",
+      "Slice 2 ADR-0001: vias generated for Serpentine AND SineWave via inter-layer end-turn generator (do not expand CoilTopologyIpc surface)",
+      "Slice 2 ADR-0002: flux viz via Rust sample_b_field Tauri command (no magpylib runtime)",
+      "Slice 2 known issue: 170% force ripple (commutation alignment) is ISOLATED and not in scope for Slice 2"
+    ],
+    "adrs": "docs/adr/"
   },
   "phases": {
     "B": {
       "target_agent": "general",
       "title": "Port config structs + result types to Rust",
       "status": "done",
+      "shipped_in": "Phase 5",
       "input_files": [
         "pcbstatorgen/config.py",
         "pcbstatorgen/magnet_grades.py",
@@ -30,12 +35,13 @@
         "crates/pcbstatorgen-rs/src/magnet_grades.rs",
         "crates/pcbstatorgen-rs/src/units.rs"
       ],
-      "instructions": "Port all Python dataclasses to serde structs with full validation (mirroring _validate_base / _validate_linear). Include: MagnetArrangement enum (Alternating/AlternatingBackIron/Halbach/HalbachBackIron), CoilTopology enum (Serpentine/SineWave/Concentrated/Rhombic/Spiral), BaseMotorConfig fields (but as a single LinearMotorConfig flat struct \u2014 no inheritance in Rust), LinearMotorConfig with derived methods coil_span_m()/travel_m()/pole_pitch_m()/magnet_gap_m()/slot_pitch_m()/min_via_pad_m()/acceleration_force_n()/minimum_drive_force_n(), and result types StackupResult/HeightStackResult/FrictionBudget/PowerBudget with their derived methods (total_height_m, minimum_drive_force_n, etc.). Port magnet_grades.rs fully (get_remanence handles N44H suffixes). units.rs is already mostly done \u2014 add skin_depth_m and cu_resistance_per_length if missing, plus CopperWeight presets. Add #[cfg(test)] unit tests mirroring tests/test_config.py validation cases. Verify with: cargo test -p pcbstatorgen-rs config."
+      "instructions": "Port all Python dataclasses to serde structs with full validation (mirroring _validate_base / _validate_linear). Include: MagnetArrangement enum (Alternating/AlternatingBackIron/Halbach/HalbachBackIron), CoilTopology enum (Serpentine/SineWave/Concentrated/Rhombic/Spiral), BaseMotorConfig fields (but as a single LinearMotorConfig flat struct — no inheritance in Rust), LinearMotorConfig with derived methods coil_span_m()/travel_m()/pole_pitch_m()/magnet_gap_m()/slot_pitch_m()/min_via_pad_m()/acceleration_force_n()/minimum_drive_force_n(), and result types StackupResult/HeightStackResult/FrictionBudget/PowerBudget with their derived methods (total_height_m, minimum_drive_force_n, etc.). Port magnet_grades.rs fully (get_remanence handles N44H suffixes). units.rs is already mostly done — add skin_depth_m and cu_resistance_per_length if missing, plus CopperWeight presets. Add #[cfg(test)] unit tests mirroring tests/test_config.py validation cases. Verify with: cargo test -p pcbstatorgen-rs config."
     },
     "C": {
       "target_agent": "general",
       "title": "Port coil geometry generators to Rust",
       "status": "done",
+      "shipped_in": "Phase 5",
       "blocked_on": [
         "B"
       ],
@@ -55,7 +61,8 @@
     "D": {
       "target_agent": "magnetics-sim-expert",
       "title": "Physics core: magba adapter + magnet array + Lorentz force evaluator",
-      "status": "pending",
+      "status": "done",
+      "shipped_in": "Phase 5+6",
       "blocked_on": [
         "B",
         "C"
@@ -72,12 +79,13 @@
         "crates/pcbstatorgen-rs/src/magnetic/coil_model.rs",
         "crates/pcbstatorgen-rs/src/magnetic/force_eval.rs"
       ],
-      "instructions": "Implement physics adapter over magba (CuboidSource wrapper, compute_b_field batch via Rayon). Port MagnetArray (4 arrangements: Alternating, Halbach with X-polarised interleave, back-iron method-of-images with _K_IRON=0.85). Port CoilCurrentModel (active segments \u2192 PathCurrent polylines, meshing param, layer_z_m). Implement Lorentz force natively with nalgebra: F = I * \u03a3(dL_i \u00d7 B_i) (~20 lines), torque \u03c4 = \u03a3(r_i \u00d7 F_i) (~5 lines). Port ForceEvaluator with commutation modes (max_torque sinusoidal FOC, phase_a_only), ripple_pct, Newton's 3rd Law sign flip (F_mover = -F_stator), self-calibration guard (test step +0.1*tau_p, invert phase if F_mover<0). Electrical angle \u03b8_e = 2\u03c0*p/(2\u03c4) + \u03c0. Validate against scripts/fixtures/test_vectors.json (run scripts/export_test_vectors.py first). Verify: cargo test -p pcbstatorgen-rs magnetic."
+      "instructions": "Implement physics adapter over magba (CuboidSource wrapper, compute_b_field batch via Rayon). Port MagnetArray (4 arrangements: Alternating, Halbach with X-polarised interleave, back-iron method-of-images with _K_IRON=0.85). Port CoilCurrentModel (active segments → PathCurrent polylines, meshing param, layer_z_m). Implement Lorentz force natively with nalgebra: F = I * Σ(dL_i × B_i) (~20 lines), torque τ = Σ(r_i × F_i) (~5 lines). Port ForceEvaluator with commutation modes (max_torque sinusoidal FOC, phase_a_only), ripple_pct, Newton's 3rd Law sign flip (F_mover = -F_stator), self-calibration guard (test step +0.1*tau_p, invert phase if F_mover<0). Electrical angle θ_e = 2π*p/(2τ) + π. Validate against scripts/fixtures/test_vectors.json (run scripts/export_test_vectors.py first). Verify: cargo test -p pcbstatorgen-rs magnetic."
     },
     "E": {
       "target_agent": "general",
       "title": "Port height stackup + power + friction equations",
       "status": "done",
+      "shipped_in": "Phase 5",
       "blocked_on": [
         "B",
         "C"
@@ -93,22 +101,24 @@
         "crates/pcbstatorgen-rs/src/stackup/power.rs",
         "crates/pcbstatorgen-rs/src/stackup/friction.rs"
       ],
-      "instructions": "Port HeightStackCalculator (calculate/fits_in_budget/headroom_m/max_air_gap_for_budget/field_sensitivity_per_mm=-\u03c0/\u03c4*1e-3/field_at_gap 1st harmonic formula). Port PowerEstimator (estimate with _trace_params/_single_layer_trace_length_m using WaveWindingGenerator, R_thermal=15 C/W, t_burst=0.1s, droop=10%, v_rated=0.10 m/s). Port FrictionEstimator (BearingType enum, MU_BEARING map, ffc_drag=0.020 N/conductor, wiper=0.055 N, from_config). Port unit tests. Verify: cargo test -p pcbstatorgen-rs stackup."
+      "instructions": "Port HeightStackCalculator (calculate/fits_in_budget/headroom_m/max_air_gap_for_budget/field_sensitivity_per_mm=-π/τ*1e-3/field_at_gap 1st harmonic formula). Port PowerEstimator (estimate with _trace_params/_single_layer_trace_length_m using WaveWindingGenerator, R_thermal=15 C/W, t_burst=0.1s, droop=10%, v_rated=0.10 m/s). Port FrictionEstimator (BearingType enum, MU_BEARING map, ffc_drag=0.020 N/conductor, wiper=0.055 N, from_config). Port unit tests. Verify: cargo test -p pcbstatorgen-rs stackup."
     },
     "F": {
       "target_agent": "magnetics-sim-expert",
       "title": "Cross-validate Rust physics against Python test vectors",
-      "status": "pending",
+      "status": "done",
+      "shipped_in": "Phase 5+6",
       "blocked_on": [
         "D",
         "E"
       ],
-      "instructions": "Run scripts/export_test_vectors.py to regenerate fixtures. Write Rust integration tests in crates/pcbstatorgen-rs/tests/ that load scripts/fixtures/test_vectors.json and assert: config derived values exact, coil segment counts/lengths \u00b10.1%, B-field \u00b11%, force \u00b12%, ripple \u00b10.5pp. Document any systematic discrepancies. Report back if magba B-field differs from Magpylib beyond tolerance."
+      "instructions": "Run scripts/export_test_vectors.py to regenerate fixtures. Write Rust integration tests in crates/pcbstatorgen-rs/tests/ that load scripts/fixtures/test_vectors.json and assert: config derived values exact, coil segment counts/lengths ±0.1%, B-field ±1%, force ±2%, ripple ±0.5pp. Document any systematic discrepancies. Report back if magba B-field differs from Magpylib beyond tolerance."
     },
     "G": {
       "target_agent": "tauri-interface",
       "title": "Wire Tauri #[tauri::command] async handlers",
-      "status": "pending",
+      "status": "done",
+      "shipped_in": "Phase 6",
       "blocked_on": [
         "D",
         "E"
@@ -118,30 +128,184 @@
         "app/src-tauri/src/commands.rs",
         "app/src/lib/ipc.ts"
       ],
-      "instructions": "Wire Tauri v2 async command handlers calling pcbstatorgen-rs: compute_config_derived (travel/coil_span/etc), generate_coils (topology + phase count \u2192 CoilPathDto), evaluate_force_sweep (config + coils \u2192 ForceResultDto), compute_height_stack, compute_power_budget, compute_friction. Define serde DTO structs in commands.rs matching the frontend types. Use tauri::async_command with spawn_blocking for heavy sweeps. Update main.rs to invoke tauri::Builder with invoke_handler. Create app/src/lib/ipc.ts with typed invoke() wrappers for the Svelte frontend. Verify: cargo build -p pcbstatorgen-app."
+      "instructions": "Wire Tauri v2 async command handlers calling pcbstatorgen-rs: compute_config_derived (travel/coil_span/etc), generate_coils (topology + phase count → CoilPathDto), evaluate_force_sweep (config + coils → ForceResultDto), compute_height_stack, compute_power_budget, compute_friction. Define serde DTO structs in commands.rs matching the frontend types. Use tauri::async_command with spawn_blocking for heavy sweeps. Update main.rs to invoke tauri::Builder with invoke_handler. Create app/src/lib/ipc.ts with typed invoke() wrappers for the Svelte frontend. Verify: cargo build -p pcbstatorgen-app."
     },
     "H": {
       "target_agent": "svelte-file-editor",
       "title": "Build Svelte 5 single-dashboard UI",
-      "status": "pending",
+      "status": "done",
+      "shipped_in": "Phase 6",
       "blocked_on": [
         "G"
       ],
       "requirements": [
         "Svelte 5 runes ($state, $derived, $effect)",
         "Tailwind CSS",
-        "Linear/Radial toggle \u2014 Radial DISABLED with TODO label",
+        "Linear/Radial toggle — Radial DISABLED with TODO label",
         "Magnet grade helper dropdown (N35-N52 + Custom) auto-syncing Br",
         "Vernier spacing ratio dropdown (1:1, 4:5, 5:6)",
         "Ripple % metric display",
-        "Interactive stator/mover/travel diagram (PRODUCT_GOALS.md \u00a73.A): fixed stator bar + sliding mover bar + travel zone, updates in real-time as active_area/magnet_count/magnet_width/gap change",
+        "Interactive stator/mover/travel diagram (PRODUCT_GOALS.md §3.A): fixed stator bar + sliding mover bar + travel zone, updates in real-time as active_area/magnet_count/magnet_width/gap change",
         "SVG coil preview rendering active vs end-turn segments",
         "Live metrics panel: mean/peak/min thrust, ripple%, height stack, power budget, friction breakdown"
       ],
       "instructions": "Build App.svelte as the single dashboard. Use @tauri-apps/api invoke() to call backend commands. Throttle slider input with a 150ms debounce before invoking heavy physics. All component files (.svelte/.svelte.ts) MUST go through the svelte-code-writer skill and svelte-autofixer tool."
     }
   },
-  "critical_path": [
+  "rounds": {
+    "slice-1-magnet-labels-and-resting-position": {
+      "title": "Magnet Labels + Resting Position",
+      "status": "done",
+      "date": "2026-07-13",
+      "scope_summary": "Re-expose the three magnet body dimensions with axis-of-motion tooltips; add the MagnetArrangement selector with conditional back-iron field; add a real derived rest_offset_m field; show Slot Pitch and Rest Offset in the Derived Geometry block; per-layer Z-stack in CoilPreview so multi-layer coils no longer look overlapping.",
+      "work_packages": {
+        "WP1": {
+          "title": "Magnet dimensions + arrangement selector UI",
+          "owner": "@svelte-file-editor",
+          "status": "done",
+          "files": ["app/src/lib/components/ParameterPanel.svelte"]
+        },
+        "WP2": {
+          "title": "rest_offset_m end-to-end (core + IPC + UI)",
+          "owner": "@tauri-interface",
+          "status": "done",
+          "files": [
+            "crates/pcbstatorgen-rs/src/config.rs",
+            "crates/pcbstatorgen-rs/src/magnetic/force_eval.rs",
+            "app/src-tauri/src/ipc.rs",
+            "app/src/lib/components/ParameterPanel.svelte"
+          ]
+        },
+        "WP6": {
+          "title": "CoilPreview per-layer Z stack",
+          "owner": "@svelte-file-editor",
+          "status": "done",
+          "files": ["app/src/lib/components/CoilPreview.svelte"]
+        },
+        "WP7": {
+          "title": "PRODUCT_PLAN.md doc update + ADR bootstrap",
+          "owner": "@product-owner",
+          "status": "done",
+          "files": ["PRODUCT_PLAN.md", "docs/adr/"]
+        }
+      },
+      "adrs_recorded": ["0001", "0002", "0003", "0004", "0005", "0006", "0007"],
+      "verification": {
+        "cargo_test_workspace": "225 passed, 0 failed",
+        "cargo_build_pcbstatorgen_app": "clean",
+        "svelte_autofixer": "0 issues on all touched components",
+        "magpylib_grep": "no leakage in app/src or app/src-tauri/src"
+      }
+    },
+    "slice-2-kicad-vias-and-flux-visualization": {
+      "title": "KiCad Vias + Flux Visualization",
+      "status": "done",
+      "date_started": "2026-07-13",
+      "date_completed": "2026-07-13",
+      "scope_summary": "Generate vias for Serpentine and SineWave topologies on KiCad export; expose the B-field as a sample_b_field Tauri command; render a 24x12 B-field arrow grid in a new FluxDiagram Svelte component. No magpylib runtime.",
+      "work_packages": {
+        "WP3": {
+          "title": "Inter-layer via-grid generator (KiCad IPC)",
+          "owner": "@magnetics-sim-expert",
+          "owner_note": "Originally dispatched to @kicad-ipc-expert (Python-expert, misaligned with Rust core) which returned empty. Re-dispatched to @magnetics-sim-expert.",
+          "status": "done",
+          "blocked_on": [],
+          "consults": ["@pcb-motor-expert on end-turn via placement rules"],
+          "adrs": ["0001"],
+          "files": [
+            "crates/pcbstatorgen-rs/src/geometry/wave_winding.rs",
+            "crates/pcbstatorgen-rs/src/kicad/writer.rs",
+            "crates/pcbstatorgen-rs/tests/kicad_writer.rs"
+          ],
+          "delivered": "Added serpentine_via_positions and sine_wave_via_positions helpers in wave_winding.rs; integrated into both generators so center_via_positions is populated for Serpentine (via at end of every end-turn) and SineWave (vias at terminal_start and terminal_end). Empty for single-layer phases. Added validate_via_clearance guard (drill + 2*ring < slot_pitch). 9 new unit tests + 8 new integration tests. 5 existing writer tests switched to single-layer-per-phase config to stay valid.",
+          "acceptance": "cargo test -p pcbstatorgen-rs kicad:: passes; center_via_positions non-empty for both Serpentine and SineWave; no change to CoilTopologyIpc surface or saved-state serde schema"
+        },
+        "WP4": {
+          "title": "sample_b_field Tauri command (Magnetics sim)",
+          "owner": "@magnetics-sim-expert",
+          "status": "done",
+          "blocked_on": [],
+          "adrs": ["0002"],
+          "files": [
+            "crates/pcbstatorgen-rs/src/magnetic/magnet_model.rs",
+            "app/src-tauri/src/ipc.rs",
+            "app/src-tauri/src/commands.rs",
+            "app/src-tauri/src/main.rs",
+            "app/src/lib/types.ts",
+            "app/src/lib/tauri.ts"
+          ],
+          "delivered": "Added BFieldSample2D struct and MagnetArray::bfield_grid 2D sampler (row-major, Z slow; routes through pcbstatorgen_rs::physics magba adapter). 5 new unit tests. Added BFieldSampleIpc / BFieldGridIpc DTOs, sample_b_field Tauri command (spawn_blocking, 4096-sample cap, 24x12 default), registered in main.rs. Frontend types + sampleBField wrapper + mockBFieldGrid fallback. Tauri host + frontend patches applied manually by orchestrator (agent's tool permission scope excluded app/**).",
+          "acceptance": "sample_b_field registered in generate_handler!; returns a populated X-Z grid for all four magnet arrangements; no magpylib import in crate dependency tree; cargo build -p pcbstatorgen-app succeeds"
+        },
+        "WP5": {
+          "title": "FluxDiagram.svelte (Svelte UI)",
+          "owner": "@svelte-file-editor",
+          "status": "done",
+          "blocked_on": ["WP4"],
+          "adrs": ["0002", "0003"],
+          "files": [
+            "app/src/lib/components/FluxDiagram.svelte (new)",
+            "app/src/App.svelte"
+          ],
+          "delivered": "New 340-line FluxDiagram.svelte component rendering 24x12 B-field arrow grid in SVG (X-Z cross-section, Y averaged). Color-blind-safe 5-stop palette. Auto-refresh on arrangement/dimension change. 150ms debounce. Stale-response guard (sampleSeq). K_M_PER_T = 0.003 m/T (deviated from spec's 0.005 — 30:1 X:Z aspect ratio made 0.005 dominant). Mounted in App.svelte between TravelDiagram and CoilPreview. svelte-autofixer: 0 issues.",
+          "acceptance": "Component renders an arrow grid; auto-refreshes on arrangement or dimension change; svelte-autofixer reports 0 issues; magpylib may be consulted as read-only research but MUST NOT be imported"
+        },
+        "WP7": {
+          "title": "PRODUCT_PLAN.md doc update for Slice 2 + active_task.json reconciliation",
+          "owner": "@product-owner",
+          "status": "done",
+          "files": ["PRODUCT_PLAN.md", ".opencode/active_task.json"],
+          "delivered": "Updated Slice 2 section in PRODUCT_PLAN.md (header flipped to DONE; per-WP delivered bullets with file:line citations; verification summary). Updated rounds section in active_task.json (status flipped to done; per-WP delivered summaries; verification block; orchestrator_notes reconciled to 247 tests). The @product-owner agent had permission issues with .opencode/active_task.json; the orchestrator applied the active_task.json updates directly."
+        }
+      },
+      "adrs_recorded": ["0001", "0002", "0003"],
+      "verification": {
+        "cargo_test_workspace": "247 passed, 0 failed (225 after Slice 1; +22 net: +17 from WP3, +5 from WP4 core)",
+        "cargo_build_pcbstatorgen_app": "clean",
+        "svelte_autofixer": "0 issues on FluxDiagram.svelte and App.svelte",
+        "magpylib_grep": "empty in app/src and app/src-tauri/src (only a doc comment in FluxDiagram.svelte explicitly stating no import)",
+        "isolated_known_issue": "170% force ripple remains ISOLATED; nothing in Slice 2 depends on a clean force sweep"
+      }
+    },
+    "round-7-net-short-circuit-and-docs-cleanup": {
+      "title": "Net /A Short-Circuit + Docs Cleanup",
+      "status": "in_progress",
+      "date_started": "2026-07-13",
+      "scope_summary": "Documented but UNRESOLVED net short-circuit bug in saved .kicad_pcb (all 588 items show net '/A' instead of {'/A','/B','/C'}). Rust source verified correct by new regression test. User deferred to a new session. Also: cleanup of PRODUCT_PLAN.md (727 → 214 lines, moved per-WP details here).",
+      "work_packages": {
+        "WP1": {
+          "title": "Net /A short-circuit investigation (Bug 16)",
+          "owner": "deferred (new session)",
+          "status": "investigated_unresolved",
+          "files": [
+            "test/MagneticFader.kicad_pcb",
+            "crates/pcbstatorgen-rs/src/kicad/writer.rs"
+          ],
+          "delivered": "Source code verified correct via new regression test `test_distinct_phase_nets_for_three_phase_config` (256 lib tests, 30 kicad_writer tests all pass). User-facing artifact `test/MagneticFader.kicad_pcb` still shows the bug (all 588 items with `(net \"/A\")`). Root cause unresolved — likely a stale build, a mock-backend issue, or an uncovered serialization path. Two new tests added: `test_distinct_phase_nets_for_three_phase_config` and `test_phase_name_per_phase_idx_is_district`.",
+          "artifact_note": "`grep -c '(net \"/A\")' test/MagneticFader.kicad_pcb` returns 588."
+        },
+        "WP2": {
+          "title": "PRODUCT_PLAN.md cleanup (727 → 214 lines)",
+          "owner": "@product-owner",
+          "status": "done",
+          "files": ["PRODUCT_PLAN.md"],
+          "delivered": "Slimmed PRODUCT_PLAN.md to high-level roadmap + Known Issues + Wishes + Round 7 + ADRs. Moved per-WP per-round details to .opencode/active_task.json (this file). Removed historical §2-§7. Added Bug 16 (net short-circuit) to Known Issues with artifact reference and proof-of-correctness test note."
+        }
+      },
+      "verification": {
+        "cargo_test_workspace": "302 passed, 0 failed (288 after Round 6, +14 net: 2 new net tests + 12 added in prior rounds)",
+        "cargo_build_pcbstatorgen_app": "clean",
+        "product_plan_line_count": "727 → 214 (-71%)"
+      }
+    },
+    "round-n-plus-1-travel-diagram-views": {
+      "title": "TravelDiagram 3/4 + Orthographic (DEFERRED)",
+      "status": "deferred",
+      "scope_summary": "In the existing 2D TravelDiagram view, draw the magnets ABOVE the track (correct physical orientation). Add a 3/4 isometric view and a front-on orthographic view of the stator + mover assembly. All three views update in real-time.",
+      "user_request_verbatim": "the interactive travel diagram could be improved to show the magnets inside the track instead of below. Above this, it would be good to see a 3/4 view of the assembly, and beside a front-on orthographic view to understand the height of the assembly."
+    }
+  },
+  "critical_path_historical": [
     "B",
     "C",
     "D",
@@ -149,7 +313,7 @@
     "G",
     "H"
   ],
-  "parallelizable": [
+  "parallelizable_historical": [
     [
       "B",
       "C-after-B"

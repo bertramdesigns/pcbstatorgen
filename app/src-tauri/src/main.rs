@@ -18,12 +18,16 @@ fn main() {
             commands::compute_height_stack,
             commands::generate_coils,
             commands::evaluate_force_sweep,
+            commands::sample_b_field,
             commands::compute_stackup,
             commands::compute_power_budget,
             commands::compute_friction,
             commands::connect_kicad,
             commands::write_coils_to_board,
             commands::ping_kicad,
+            commands::get_board_diagnostics,
+            commands::validate_write_preconditions,
+            commands::preview_coils,
         ])
         .run(tauri::generate_context!())
         .expect("error while running pcbstatorgen tauri application");

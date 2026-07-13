@@ -23,6 +23,17 @@ const SPACING_RATIO_MAP: Record<SpacingRatio, number> = {
   "5:6": 5 / 6,
 };
 
+/** Default back-iron thickness applied when the user enables a BackIron
+ *  magnet arrangement for the first time. Only used when the user has
+ *  not already configured a non-zero value. Exported so the auto-default
+ *  behavior (in ParameterPanel.svelte) can reference the same value. */
+export const DEFAULT_BACK_IRON_THICKNESS_MM = 1.0;
+
+export const BACK_IRON_ARRANGEMENTS: ReadonlySet<MagnetArrangement> = new Set([
+  "AlternatingBackIron",
+  "HalbachBackIron",
+]);
+
 export class ConfigStore {
   // --- Topology ----------------------------------------------------------
   topology = $state<"linear" | "radial">("linear");

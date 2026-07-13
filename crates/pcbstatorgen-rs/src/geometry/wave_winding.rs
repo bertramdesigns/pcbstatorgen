@@ -337,12 +337,19 @@ impl WaveWindingGenerator {
             going_up = !going_up;
         }
 
+        // Inter-layer end-turn vias: one per end-turn, placed at the end of the
+        // end-turn (on the same edge as the next active conductor). Only emitted
+        // when the phase spans more than one copper layer — single-layer-per-phase
+        // designs have no inter-layer connections to make.
+        let center_via_positions = serpentine_via_positions(config, phase_idx, &segments);
+
         PhaseCoil {
             phase_idx,
             layer_idx,
             segments,
             phase_name,
             topology: CoilTopology::Serpentine,
+            center_via_positions,
             ..PhaseCoil::default()
         }
     }
@@ -410,12 +417,19 @@ impl SineWaveWindingGenerator {
             });
         }
 
+        // Inter-layer vias for a continuous sine wave path: place one via at
+        // the start and one at the end of the phase coil, so adjacent layers
+        // can chain the continuous path together. Only emitted when the phase
+        // spans more than one copper layer.
+        let center_via_positions = sine_wave_via_positions(config, phase_idx, &segments);
+
         PhaseCoil {
             phase_idx,
             layer_idx,
             segments,
             phase_name,
             topology: CoilTopology::SineWave,
+            center_via_positions,
             ..PhaseCoil::default()
         }
     }
@@ -432,6 +446,119 @@ impl CoilGenerator for SineWaveWindingGenerator {
     fn generate(&self, config: &LinearMotorConfig, layer_idx: u32) -> Vec<PhaseCoil> {
         SineWaveWindingGenerator.generate(config, layer_idx)
     }
+}
+
+// ---------------------------------------------------------------------------
+// Inter-layer end-turn via generator (ADR-0001)
+//
+// The KiCad writer already iterates `coil.center_via_positions` and emits one
+// `Via` proto per position. For the two UI-selectable topologies
+// (`Serpentine` and `SineWave`) the original generator left that field empty,
+// so multi-layer coils exported with no inter-layer connections and tracks
+// from different layers visually overlapped. This block populates the field
+// for those two topologies, without touching `CoilTopologyIpc` or the writer.
+//
+// The `drill_diameter < slot_pitch − 2 × annular_ring` guard prevents the
+// via pad from spanning adjacent phase slots (which would short the phases).
+// ---------------------------------------------------------------------------
+
+/// Default via drill diameter used by the clearance guard [m].
+const DEFAULT_VIA_DRILL_M: f64 = 0.0003; // 0.3 mm
+/// Default via annular-ring width used by the clearance guard [m].
+const DEFAULT_VIA_ANNULAR_RING_M: f64 = 0.00015; // 0.15 mm
+
+/// Number of copper layers assigned to a given phase under the default
+/// round-robin phase-layer distribution.
+///
+/// `default_phase_layer_map` distributes `max_layers` layers across
+/// `phases` phases round-robin. A given phase `p` owns every layer
+/// `l` with `l % phases == p`. This helper counts how many such
+/// layers exist in `[0, max_layers)`.
+pub fn phase_layer_count(config: &LinearMotorConfig, phase_idx: u32) -> u32 {
+    (0..config.max_layers)
+        .filter(|&l| l % config.phases == phase_idx % config.phases)
+        .count() as u32
+}
+
+/// True if the given phase is distributed across more than one copper
+/// layer (and therefore needs inter-layer end-turn vias).
+pub fn is_phase_multi_layer(config: &LinearMotorConfig, phase_idx: u32) -> bool {
+    phase_layer_count(config, phase_idx) > 1
+}
+
+/// Serpentine placement rule (ADR-0001):
+/// one through-via at the end of every end-turn segment, on the same edge
+/// (y = 0 or y = board_width) as the end-turn. The next active conductor
+/// drops from the via position, so the via is a natural inter-layer
+/// connection point.
+///
+/// When the phase is on a single copper layer, no inter-layer connections
+/// are needed and an empty vector is returned.
+pub fn serpentine_via_positions(
+    config: &LinearMotorConfig,
+    phase_idx: u32,
+    segments: &[CoilSegment],
+) -> Vec<(f64, f64)> {
+    if !is_phase_multi_layer(config, phase_idx) {
+        return vec![];
+    }
+    segments
+        .iter()
+        .filter(|s| !s.is_active)
+        .map(|s| (s.end.0, s.end.1))
+        .collect()
+}
+
+/// SineWave placement rule (ADR-0001):
+/// the sine path is continuous, so there are no sharp end-turns. The natural
+/// inter-layer via locations are at the start and end of the phase coil
+/// (the first waypoint and the last waypoint). When the phase is on a
+/// single copper layer, no inter-layer connections are needed and an
+/// empty vector is returned.
+pub fn sine_wave_via_positions(
+    config: &LinearMotorConfig,
+    phase_idx: u32,
+    segments: &[CoilSegment],
+) -> Vec<(f64, f64)> {
+    if !is_phase_multi_layer(config, phase_idx) {
+        return vec![];
+    }
+    if segments.is_empty() {
+        return vec![];
+    }
+    let start = segments[0].start;
+    let end = segments[segments.len() - 1].end;
+    vec![start, end]
+}
+
+/// Drill-clearance guard: a via pad of diameter
+/// `drill + 2 × annular_ring` must fit inside one slot pitch without
+/// touching an adjacent phase's slot. Returns `Ok(())` if safe, `Err` if
+/// the design parameters would risk a short circuit between phases.
+///
+/// `via_count` is included in the error message for context; the actual
+/// check is purely geometric and depends only on `config`.
+///
+/// Defaults used for the check: `drill_diameter = 0.3 mm`,
+/// `annular_ring = 0.15 mm`. These are hardcoded for now (ADR-0001
+/// §"Drill-clearance guard").
+pub fn validate_via_clearance(
+    config: &LinearMotorConfig,
+    via_count: usize,
+) -> Result<(), String> {
+    let slot_pitch = config.slot_pitch_m();
+    let min_required = DEFAULT_VIA_DRILL_M + 2.0 * DEFAULT_VIA_ANNULAR_RING_M;
+    if slot_pitch <= min_required {
+        return Err(format!(
+            "via clearance guard failed: drill + 2*annular_ring = {:.3} mm must be \
+             strictly less than slot_pitch = {:.3} mm (via_count={}); \
+             tighten the slot pitch or relax drill/annular defaults",
+            min_required * 1e3,
+            slot_pitch * 1e3,
+            via_count,
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -854,5 +981,168 @@ mod tests {
         let sp = cfg.slot_pitch_m();
         let coils = SineWaveWindingGenerator.generate(&cfg, 0);
         assert!((coils[1].segments[0].start.0 - sp).abs() < 1e-9);
+    }
+
+    // --- Inter-layer via generator (ADR-0001) ---
+
+    fn multi_layer_config() -> LinearMotorConfig {
+        // phases=2, max_layers=4 → each phase spans 2 layers (multi-layer).
+        LinearMotorConfig {
+            name: Some("multi".into()),
+            active_area_length_m: mm(48.0),
+            magnet_dims_m: [mm(10.0), mm(10.0), mm(4.0)],
+            magnet_count: 2,
+            magnet_pitch_m: mm(24.0),
+            phases: 2,
+            target_force_n: 0.1,
+            max_current_a: 1.0,
+            min_trace_m: mils_to_m(5.0),
+            min_space_m: mils_to_m(5.0),
+            min_via_drill_m: mm(0.2),
+            min_via_annular_ring_m: mm(0.1),
+            board_width_m: mm(20.0),
+            air_gap_m: mm(0.5),
+            max_layers: 4,
+            ..LinearMotorConfig::default()
+        }
+    }
+
+    fn single_layer_config() -> LinearMotorConfig {
+        // phases=3, max_layers=3 → each phase on a single layer.
+        LinearMotorConfig {
+            name: Some("single".into()),
+            active_area_length_m: mm(48.0),
+            magnet_dims_m: [mm(10.0), mm(10.0), mm(4.0)],
+            magnet_count: 2,
+            magnet_pitch_m: mm(24.0),
+            phases: 3,
+            target_force_n: 0.1,
+            max_current_a: 1.0,
+            min_trace_m: mils_to_m(5.0),
+            min_space_m: mils_to_m(5.0),
+            min_via_drill_m: mm(0.2),
+            min_via_annular_ring_m: mm(0.1),
+            board_width_m: mm(20.0),
+            air_gap_m: mm(0.5),
+            max_layers: 3,
+            ..LinearMotorConfig::default()
+        }
+    }
+
+    #[test]
+    fn test_phase_layer_count_single_layer_per_phase() {
+        let cfg = single_layer_config();
+        assert_eq!(phase_layer_count(&cfg, 0), 1);
+        assert_eq!(phase_layer_count(&cfg, 1), 1);
+        assert_eq!(phase_layer_count(&cfg, 2), 1);
+        assert!(!is_phase_multi_layer(&cfg, 0));
+    }
+
+    #[test]
+    fn test_phase_layer_count_multi_layer_per_phase() {
+        let cfg = multi_layer_config();
+        // phases=2, max_layers=4 → default map: phase 0 → [0, 2], phase 1 → [1, 3]
+        assert_eq!(phase_layer_count(&cfg, 0), 2);
+        assert_eq!(phase_layer_count(&cfg, 1), 2);
+        assert!(is_phase_multi_layer(&cfg, 0));
+        assert!(is_phase_multi_layer(&cfg, 1));
+    }
+
+    #[test]
+    fn test_phase_layer_count_uneven_4_3() {
+        // phases=3, max_layers=4 → phase 0 → [0, 3], phase 1 → [1], phase 2 → [2]
+        let mut cfg = multi_layer_config();
+        cfg.phases = 3;
+        cfg.max_layers = 4;
+        assert_eq!(phase_layer_count(&cfg, 0), 2);
+        assert_eq!(phase_layer_count(&cfg, 1), 1);
+        assert_eq!(phase_layer_count(&cfg, 2), 1);
+        assert!(is_phase_multi_layer(&cfg, 0));
+        assert!(!is_phase_multi_layer(&cfg, 1));
+        assert!(!is_phase_multi_layer(&cfg, 2));
+    }
+
+    #[test]
+    fn test_serpentine_via_positions_multi_layer() {
+        let cfg = multi_layer_config();
+        let coil = WaveWindingGenerator.generate_phase(&cfg, 0, 0);
+        assert!(!coil.center_via_positions.is_empty(),
+            "multi-layer serpentine should emit vias");
+        // One via per end-turn (N conductors → N-1 end-turns → N-1 vias).
+        assert_eq!(coil.center_via_positions.len(),
+            coil.end_turn_segments().len());
+        // All vias must be on an edge (y=0 or y=board_width).
+        for &(x, y) in &coil.center_via_positions {
+            assert!((y - 0.0).abs() < 1e-9 || (y - cfg.board_width_m).abs() < 1e-9,
+                "via y={y} not on board edge");
+            assert!(x >= 0.0, "via x={x} not in board");
+        }
+    }
+
+    #[test]
+    fn test_serpentine_via_positions_single_layer() {
+        let cfg = single_layer_config();
+        let coil = WaveWindingGenerator.generate_phase(&cfg, 0, 0);
+        assert!(coil.center_via_positions.is_empty(),
+            "single-layer serpentine should emit no vias");
+    }
+
+    #[test]
+    fn test_sine_wave_via_positions_multi_layer() {
+        let cfg = multi_layer_config();
+        let coil = SineWaveWindingGenerator.generate_phase(&cfg, 0, 0);
+        assert_eq!(coil.center_via_positions.len(), 2,
+            "multi-layer sine wave should emit exactly 2 vias (start + end)");
+        let start = coil.terminal_start();
+        let end = coil.terminal_end();
+        assert!(coil.center_via_positions.contains(&start));
+        assert!(coil.center_via_positions.contains(&end));
+    }
+
+    #[test]
+    fn test_sine_wave_via_positions_single_layer() {
+        let cfg = single_layer_config();
+        let coil = SineWaveWindingGenerator.generate_phase(&cfg, 0, 0);
+        assert!(coil.center_via_positions.is_empty(),
+            "single-layer sine wave should emit no vias");
+    }
+
+    #[test]
+    fn test_validate_via_clearance_passes_for_default() {
+        // default_config: phases=3, pole_pitch=12mm → slot_pitch=4mm.
+        // 0.3 + 2*0.15 = 0.6mm << 4mm. Should pass.
+        let cfg = default_config();
+        assert!(validate_via_clearance(&cfg, 16).is_ok());
+    }
+
+    #[test]
+    fn test_validate_via_clearance_fails_for_tight_pitch() {
+        // Construct a config with slot_pitch = 0.5mm (tighter than 0.6mm).
+        let cfg = LinearMotorConfig {
+            name: Some("tight".into()),
+            active_area_length_m: mm(48.0),
+            magnet_dims_m: [mm(10.0), mm(10.0), mm(4.0)],
+            magnet_count: 2,
+            magnet_pitch_m: mm(1.5),  // pole_pitch = 1.5mm
+            phases: 3,                 // slot_pitch = 1.5/3 = 0.5mm
+            spacing_ratio: 1.0,
+            target_force_n: 0.1,
+            max_current_a: 1.0,
+            min_trace_m: mils_to_m(5.0),
+            min_space_m: mils_to_m(5.0),
+            min_via_drill_m: mm(0.2),
+            min_via_annular_ring_m: mm(0.1),
+            board_width_m: mm(20.0),
+            air_gap_m: mm(0.5),
+            max_layers: 4,
+            ..LinearMotorConfig::default()
+        };
+        assert!((cfg.slot_pitch_m() - 0.0005).abs() < 1e-9,
+            "test setup: slot_pitch should be 0.5mm");
+        let err = validate_via_clearance(&cfg, 4);
+        assert!(err.is_err());
+        let msg = err.unwrap_err();
+        assert!(msg.contains("via clearance guard failed"));
+        assert!(msg.contains("via_count=4"));
     }
 }

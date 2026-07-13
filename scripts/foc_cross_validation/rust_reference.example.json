@@ -1,0 +1,27 @@
+{
+  "mean_thrust_mn": null,
+  "ripple_pct": null,
+  "phase_shift_rad": null,
+  "_comment": [
+    "Override file for scripts/foc_cross_validation/compare.py.",
+    "Pass it as the first positional argument:",
+    "  python3 scripts/foc_cross_validation/compare.py rust_reference.json",
+    "",
+    "Only the keys you set will override the hard-coded defaults in compare.py.",
+    "The hard-coded defaults are:",
+    "  mean_thrust_mn  = 75.0  (rough code-comment estimate)",
+    "  ripple_pct      = 14.7  (user-provided, matches the Rust < 20% test)",
+    "  phase_shift_rad = 3.141592653589793  (post self-calibration at 1:1 default)",
+    "",
+    "To capture the actual Rust output, add a tiny driver in",
+    "crates/pcbstatorgen-rs/examples/ that prints ForceResult to JSON, e.g.:",
+    "    let mut ev = ForceEvaluator::new(50, 20, MaxTorque, 0.0);",
+    "    let cfg = LinearMotorConfig::default();",
+    "    let coils = WaveWindingGenerator.generate(&cfg, 0);",
+    "    let r = ev.evaluate(&cfg, &coils);",
+    "    println!(\"{{\\\"mean_thrust_mn\\\":{},\\\"ripple_pct\\\":{}}},",
+    "             r.mean_thrust_n() * 1e3, r.ripple_pct());",
+    "Then:  cargo run -p pcbstatorgen-rs --example dump_foc_reference > rust_reference.json",
+    "(This README is documentation; compare.py will ignore the _comment key.)"
+  ]
+}
