@@ -1,8 +1,6 @@
 //! `CoilCurrentModel` — converts `PhaseCoil` objects into sampled conductor
 //! segments for Lorentz force integration.
 //!
-//! Ports `pcbstatorgen/magnetic/coil_model.py`.
-//!
 //! ## Conductor modelling
 //!
 //! Each *active conductor* segment (vertical traces perpendicular to travel)

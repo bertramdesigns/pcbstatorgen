@@ -25,6 +25,7 @@
   import MetricsPanel from "./lib/components/MetricsPanel.svelte";
   import ForceSweepPlot from "./lib/components/ForceSweepPlot.svelte";
   import ValidationWarning from "./lib/components/ValidationWarning.svelte";
+  import KicadPanel from "./lib/components/KicadPanel.svelte";
 
   // Async result state.
   let sweep = $state<ForceSweepResult | null>(null);
@@ -154,6 +155,7 @@
       <TravelDiagram {config} />
       <CoilPreview {config} {coils} />
       <ForceSweepPlot result={sweep} />
+      <KicadPanel />
     </section>
 
     <!-- Right: live metrics -->

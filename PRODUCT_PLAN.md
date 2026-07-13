@@ -58,12 +58,181 @@ This document contains the implementation roadmap, architectural feasibility stu
 └──────────────────────────┬─────────────────────────────┘
                            ▼
 ┌────────────────────────────────────────────────────────┐
-│  PHASE 7: KiCad 10 IPC Writer (Rust native)             │
-│  - kipy socket protocol in Rust                          │
+│  PHASE 7: KiCad 10 IPC Writer (Rust native)       (DONE)│
+│  - kipy socket protocol in Rust (NNG + prost)          │
 │  - Track/via grid generation, atomic commits (Ctrl+Z)  │
-│  - Streamlit deprecation                                │
+│  - Wire 6 Phase-6 Tauri stubs to real core calls       │
+│  - Svelte KiCad panel (connect, write, dry-run)        │
+│  - Streamlit deprecation (Stage 5)                      │
+│  - 222 Rust tests pass; 548 Python oracle tests pass   │
+│  See §7 — Phase 7 Technical Specification              │
 └────────────────────────────────────────────────────────┘
 ```
+
+---
+
+## 7. Phase 7 Technical Specification — KiCad 10 IPC Writer + Streamlit Deprecation
+
+> Added by the Orchestrator to lock down execution variables for Phase 7.
+> Supersedes any conflicting guidance. See `PRODUCT_ARCHITECTURE.md` for the
+> full system architecture.
+
+### 7.1 Phase 7 Scope Summary
+
+Phase 7 executes **Stage 4** (KiCad IPC Writer) and **Stage 5** (Streamlit
+Deprecation) of the 5-Stage Transition Plan (§5). It is the final phase before
+the product reaches feature-complete status.
+
+| Workstream                          | Stage | Priority | Effort   |
+| ----------------------------------- | ----- | -------- | -------- |
+| Rust NNG socket client + prost      | 4     | P0       | 2 days   |
+| KiCad writer module (Track/Via)     | 4     | P0       | 2 days   |
+| Atomic commit (BeginCommit/End)    | 4     | P0       | 0.5 day  |
+| Vendored .proto files + build.rs    | 4     | P0       | 0.5 day  |
+| Wire 6 Tauri stubs to real core     | 4     | P0       | 1 day    |
+| 3 new Tauri commands (connect/write/ping) | 4 | P0     | 1 day    |
+| Svelte KiCad panel                  | 4     | P1       | 1 day    |
+| Offline unit tests (writer, client) | 4    | P0       | 1 day    |
+| Gated live integration test         | 4     | P1       | 0.5 day  |
+| Streamlit deletion (gui/, launcher) | 5     | P2       | 0.25 day |
+| Parallel verification gate          | 5     | P0       | 0.5 day  |
+| **Total**                           |       |          | **~10 days** |
+
+### 7.2 Subagent Task Breakdown
+
+The work is partitioned into **5 parallelizable tasks** for delegation to
+technical subagents. Dependencies are noted; independent tasks run concurrently.
+
+#### Task A: Protobuf Vendor + Build Infrastructure
+**Depends on:** Nothing (blocking for Tasks B, C).
+**Deliverables:**
+1. Copy `kipy/proto/` from the `kicad-python` reference repo into `crates/pcbstatorgen-rs/proto/`.
+2. Add `prost = "0.13"` and `prost-build = "0.13"` (build-dep) to `crates/pcbstatorgen-rs/Cargo.toml`.
+3. Write `crates/pcbstatorgen-rs/build.rs` invoking `prost_build` to compile all `.proto` files.
+4. Add a `kicad::proto` module in `src/kicad/mod.rs` re-exporting generated types.
+5. Verify `cargo build` succeeds with generated proto types.
+6. Write `scripts/sync_protos.sh` to re-copy protos from the reference repo.
+
+**Acceptance:** `cargo build` compiles; `prost`-generated structs for `ApiRequest`, `ApiResponse`, `Track`, `Via`, `BeginCommit`, `CreateItems`, `EndCommit` are importable.
+
+#### Task B: NNG Socket Client
+**Depends on:** Task A (proto types for envelope).
+**Deliverables:**
+1. Add `nng = "1.0"` to `crates/pcbstatorgen-rs/Cargo.toml`.
+2. Implement `src/kicad/client.rs`: `KiCadClient` struct with `connect()`, `send()`, `recv()`, envelope packing/unpacking.
+3. Implement `src/kicad/errors.rs`: `KiCadError` enum (Connection, Api, Protocol, NotConnected).
+4. Implement `KicadTransport` trait + `MockTransport` for offline testing.
+5. Socket path resolution: `KICAD_API_SOCKET` env var → default `ipc:///tmp/kicad/api.sock`.
+6. Token negotiation: cache `kicad_token` from first response.
+
+**Acceptance:** `KiCadClient::send()` packs an `ApiRequest` envelope, sends via NNG, receives `ApiResponse`, unpacks, returns typed response or `ApiError`. `MockTransport` unit tests pass.
+
+#### Task C: KiCad Writer Module (Track/Via/Commit)
+**Depends on:** Task A (proto types), Task B (client).
+**Deliverables:**
+1. `src/kicad/writer.rs`: `coils_to_board_items(coils: &[PhaseCoil], config: &LinearMotorConfig) -> Vec<BoardItem>` — pure function, no socket.
+   - Straight `CoilSegment` → `Track` proto (start, end, width, layer, net).
+   - `center_via_positions` → `Via` proto (position, drill, width, layer_set, net).
+   - Unit conversion: metres → nanometres (`m_to_nm`).
+2. `src/kicad/layer_map.rs`: `layer_idx_to_board_layer(idx, total) -> BoardLayer` (0→B_Cu, N-1→F_Cu, else In{n}_Cu).
+3. `src/kicad/commit.rs`: `Commit` struct wrapping `BeginCommit → create_items → EndCommit`.
+   - `Commit::begin(board) -> Commit`
+   - `Commit::create_items(items) -> Vec<KIID>`
+   - `Commit::end() -> ()` (drops the commit, finalizes in KiCad — single Ctrl+Z)
+4. `src/kicad/board.rs`: `BoardHandle` with `get_copper_layer_count()`, `get_board_name()`.
+5. Offline unit tests: verify `coils_to_board_items` output for serpentine + sine wave configs.
+
+**Acceptance:** `cargo test -p pcbstatorgen-rs kicad::` passes. Writer output matches Python `test_kicad_writer.py` expectations (coordinates ±1 nm).
+
+#### Task D: Tauri Command Wiring (6 stubs + 3 new)
+**Depends on:** Task C (writer), existing pcbstatorgen-rs core.
+**Deliverables:**
+1. **Wire 6 existing stubs** in `app/src-tauri/src/commands.rs` to real `pcbstatorgen-rs` calls:
+   - `generate_coils` → `WaveWindingGenerator::generate_all_layers()` + `CoilPathIpc::from_core()`.
+   - `evaluate_force_sweep` → `ForceEvaluator::evaluate()`.
+   - `compute_stackup` → `StackupCalculator::compute()`.
+   - `compute_power_budget` → `PowerEstimator::estimate()`.
+   - `compute_friction` → `FrictionEstimator::estimate()`.
+   - `compute_height_stack` → wire remaining placeholder fields to `HeightStackCalculator`.
+2. **Add 3 new commands:**
+   - `connect_kicad` → `KiCadClient::connect()`, return board name + copper layers.
+   - `write_coils_to_board` → generate coils, `coils_to_board_items()`, `Commit::create_items()`, `Commit::end()`.
+   - `ping_kicad` → `KiCad::ping()`, return version.
+3. Register all 3 new commands in `app/src-tauri/src/main.rs` `generate_handler!`.
+4. All commands use `spawn_blocking` for socket I/O and heavy computation.
+
+**Acceptance:** `cargo build -p pcbstatorgen-app` succeeds. All 9+3 commands return real data. No stub markers remain.
+
+#### Task E: Svelte KiCad Panel + Streamlit Deprecation
+**Depends on:** Task D (Tauri commands available).
+**Deliverables:**
+1. **Svelte frontend** (`app/src/lib/components/KicadPanel.svelte`):
+   - Connection status indicator (green/red dot + board name).
+   - "Write to Board" button → invokes `write_coils_to_board`.
+   - Dry-run toggle: when on, calls `generate_coils` only (no socket write).
+   - Error/success toast notifications.
+   - Uses Svelte 5 runes (`$state`, `$derived`, `$effect`).
+2. **Streamlit deprecation:**
+   - Delete `gui/streamlit_app.py`.
+   - Delete `scripts/run_headless.py`.
+   - Keep `pcbstatorgen/` Python core + `tests/` + `scripts/export_test_vectors.py` as oracle.
+   - Move `plugin_entry.py` to `docs/reference/plugin_entry.py` (protocol reference).
+   - Update README to remove Streamlit references.
+3. **Parallel verification gate:**
+   - Run `cargo test --workspace` (all 179+ tests pass).
+   - Run `pytest tests/` (Python oracle passes).
+   - Both must be green before Streamlit files are deleted.
+
+**Acceptance:** Svelte panel renders, connects, and writes. `gui/` directory removed. CI is green on both Rust and Python test suites.
+
+### 7.3 Execution Order & Parallelism
+
+```
+Day 1-2:  Task A (proto vendor + build.rs)  ──────────────┐
+                                                          │
+Day 2-4:  Task B (NNG client)  ──────────────────────────┐ │
+                                                        │ │
+Day 3-5:  Task C (writer + commit)  ◀── depends on B ──┘ │
+                                                        │ │
+Day 4-5:  Task D (Tauri wiring)  ◀── depends on C ──────┘ │
+                                                          │
+Day 5-6:  Task E part 1 (Svelte panel)  ◀── depends on D  │
+                                                          │
+Day 6-7:  Task D/E parallel (live test + stub wiring)     │
+                                                          │
+Day 7-8:  Task E part 2 (Streamlit deletion + verify) ◀──┘
+```
+
+**Tasks A and the first half of E (Svelte component scaffold) can start in
+parallel** — the Svelte panel can be built against the Tauri command signatures
+before the Rust implementation lands.
+
+### 7.4 Risk Register (Phase 7)
+
+| Risk                              | Likelihood | Impact | Mitigation                                                   |
+| --------------------------------- | ---------- | ------ | ------------------------------------------------------------ |
+| `nng` crate API differs from pynng | Medium     | High   | Wrap in `KicadTransport` trait; fall back to `nng-sys` FFI.  |
+| Proto schema mismatch (KiCad 10 version skew) | Low | High   | Pin proto files from the exact kicad-python commit matching installed KiCad 10. |
+| 170% force ripple blocks writer   | Low        | None   | Writer does not depend on force sweep quality (§6.B).        |
+| KiCad not running during dev      | High       | Medium | Offline unit tests via `MockTransport`; live test gated.     |
+| `prost-build` can't resolve proto imports | Medium | High | Vendor all transitive `.proto` deps; test `cargo build` first. |
+
+### 7.5 Acceptance Criteria (Phase 7 Complete)
+
+1. **Rust:** `cargo test --workspace` — all tests pass (179 existing + new kicad module tests).
+2. **Python oracle:** `pytest tests/` — all tests pass.
+3. **Tauri app:** `cargo build -p pcbstatorgen-app` succeeds; no stub markers in `commands.rs`.
+4. **KiCad writer:** Offline tests verify `coils_to_board_items` for serpentine + sine wave.
+5. **Live integration** (manual): connect to running KiCad 10, write coils, Ctrl+Z rolls back cleanly.
+6. **Streamlit:** `gui/` directory deleted; README updated; no Streamlit references remain.
+7. **Svelte:** KiCad panel connects, writes, shows status, handles errors gracefully.
+
+### 7.6 Branch Strategy
+
+- **Feature branch:** `feat/phase7-kicad-ipc-writer`
+- **PR target:** `main`
+- All 5 tasks land on the same feature branch (they are tightly coupled).
+- Squash-merge on approval.
 
 ---
 
@@ -223,14 +392,27 @@ The force sweep produces **170% ripple** with negative min thrust at every 3rd s
 
 **Not a blocker for Phase 7**: KiCad track generation does not depend on force sweep quality. The force evaluator produces finite, deterministic values suitable for layout validation.
 
-### C. Python Oracle Patched — Newton's Third Law + Self-Calibration Guard
+### C. Python Oracle — FULLY DEPRECATED (Post-Phase 7)
 
-The Python `ForceEvaluator` (`pcbstatorgen/magnetic/force_eval.py`) was patched during Phase 5 to add:
-1. **Newton's Third Law sign flip**: `F_mover = -F_stator` applied to all force and torque outputs (PRODUCT_GOALS.md §4.C).
-2. **Self-calibration guard**: Test step at `+0.1·τ_p` forward; if `F_mover.x < 0`, set `phase_shift = π` to align FOC with positive motion.
-3. **Dynamic phase shift**: Replaced the hardcoded `+ math.pi` offset in `θ_e` with `+ self._phase_shift` (set by the self-calibration guard).
+The Python codebase has been **fully removed**. The Rust core is the sole
+authoritative implementation. The verification gate (222 Rust tests + 548
+Python tests, all green) confirmed parity before deletion.
 
-The Rust port (`crates/pcbstatorgen-rs/src/magnetic/force_eval.rs`) implements the same logic. Test vectors (`scripts/fixtures/test_vectors.json`) were re-exported after the patch and are consistent between Python and Rust.
+**Deleted:**
+- `pcbstatorgen/` — Python physics core (test oracle)
+- `tests/` — Python pytest suite
+- `pyproject.toml` — Python project config
+- `scripts/export_test_vectors.py` — fixture generator
+- `pcbstatorgen/server.py` — dead JSON-RPC sidecar (pre-Phase-5 architecture)
+- `.pytest_cache/`, all `__pycache__/` directories
+
+**Retained:**
+- `scripts/fixtures/test_vectors.json` — committed as static test data (un-gitignored)
+- `docs/reference/plugin_entry.py` — kipy protocol reference for the Rust port
+- `scripts/sync_protos.sh` — proto sync script
+
+The Rust test suite (`crates/pcbstatorgen-rs/tests/test_vectors.rs`) loads the
+committed fixtures directly — no Python runtime is needed to regenerate them.
 
 ---
 

@@ -17,6 +17,9 @@ import type {
   HeightStackResultDto,
   FrictionBudgetDto,
   PowerBudgetDto,
+  KicadConnection,
+  KicadWriteResult,
+  KicadPingResult,
 } from "./types";
 
 // ---------------------------------------------------------------------------
@@ -99,6 +102,36 @@ export async function computeStackup(
     return await invoke<StackupResultDto>("compute_stackup", { config });
   } catch {
     return mockStackup(config);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// KiCad IPC API (phase 7 — board write via KiCad 10 IPC socket)
+// ---------------------------------------------------------------------------
+
+export async function connectKicad(): Promise<KicadConnection> {
+  try {
+    return await invoke<KicadConnection>("connect_kicad");
+  } catch {
+    return { connected: false, board_name: "(not connected)", copper_layers: 0 };
+  }
+}
+
+export async function writeCoilsToBoard(
+  config: LinearMotorConfig,
+): Promise<KicadWriteResult> {
+  try {
+    return await invoke<KicadWriteResult>("write_coils_to_board", { config });
+  } catch {
+    return { items_created: 0, commit_id: "" };
+  }
+}
+
+export async function pingKicad(): Promise<KicadPingResult> {
+  try {
+    return await invoke<KicadPingResult>("ping_kicad");
+  } catch {
+    return { ok: false, version: "" };
   }
 }
 

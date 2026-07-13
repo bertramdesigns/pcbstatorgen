@@ -1,5 +1,4 @@
 //! Height stack, power budget, friction budget.
-//! Ports `pcbstatorgen/stackup/`.
 
 pub mod friction;
 pub mod height_stack;

@@ -28,7 +28,7 @@ export class ConfigStore {
   topology = $state<"linear" | "radial">("linear");
 
   // --- Active area (mm) --------------------------------------------------
-  active_area_length_mm = $state(120);
+  active_area_length_mm = $state(195);
   active_area_width_mm = $state(20);
 
   // --- Magnet array (mm) -------------------------------------------------

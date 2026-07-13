@@ -1,7 +1,5 @@
 //! Wave winding coil path generators for a linear coreless PCB stator.
 //!
-//! Ports `pcbstatorgen/geometry/wave_winding.py`.
-//!
 //! Coordinate system: X = travel axis, Y = perpendicular (board width). All [m].
 
 use serde::{Deserialize, Serialize};
@@ -164,7 +162,7 @@ impl PhaseCoil {
 
     /// Midpoints of all end-turns at y = max_y (top edge).
     pub fn end_turn_midpoints_top(&self) -> Vec<(f64, f64)> {
-        let (_, min_y, _, max_y) = self.bounding_box();
+        let (_, _min_y, _, max_y) = self.bounding_box();
         self.end_turn_segments()
             .iter()
             .filter(|s| (s.start.1 - max_y).abs() < 1e-9)

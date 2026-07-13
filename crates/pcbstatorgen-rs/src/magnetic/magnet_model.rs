@@ -1,8 +1,6 @@
 //! `MagnetArray` — builds and manages the magnet source assembly for all
 //! four `MagnetArrangement` configurations.
 //!
-//! Ports `pcbstatorgen/magnetic/magnet_model.py`.
-//!
 //! ## Arrangement overview
 //!
 //! `Alternating` — Simple alternating ±Z poles.

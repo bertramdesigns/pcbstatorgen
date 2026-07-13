@@ -1,5 +1,5 @@
 //! Unit conversion helpers. All internal calculations use SI (metres, Tesla,
-//! Amperes, Ohms, Watts). Ports `pcbstatorgen/units.py`.
+//! Amperes, Ohms, Watts).
 
 use serde::{Deserialize, Serialize};
 

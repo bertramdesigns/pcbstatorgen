@@ -72,7 +72,7 @@
 
     {#if coils}
       <!-- Active conductors (drawn first, thicker) -->
-      {#each coils.phases as ph, pi (ph.phase_idx)}
+      {#each coils.phases as ph, pi (ph.phase_idx + "-" + ph.layer_idx)}
         {#each ph.segments.filter((s) => s.is_active) as seg, si (pi + "-a-" + si)}
           {@const [sx, sy] = px(seg.start[0], seg.start[1])}
           {@const [ex, ey] = px(seg.end[0], seg.end[1])}

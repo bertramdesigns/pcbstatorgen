@@ -1,6 +1,6 @@
 //! Magnet arrays, coil current model, force/torque evaluator.
 //!
-//! Ports `pcbstatorgen/magnetic/`. Depends on the `physics` adapter layer.
+//! Built on the `physics` adapter layer.
 //!
 //! ## Module layout
 //! - [`magnet_model`] — `MagnetArray` (4 arrangements: Alternating, Halbach, back-iron)

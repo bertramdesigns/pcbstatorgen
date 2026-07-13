@@ -1,6 +1,6 @@
 //! Configuration structs and result types (serde-serializable).
 //!
-//! Ports `pcbstatorgen/config.py`. Linear mode only — `AxialMotorConfig`
+//! Linear mode only — `AxialMotorConfig`
 //! remains a stub (PRODUCT_GOALS.md §7.A).
 //!
 //! All quantities in SI units: metres, Tesla, Amperes, Ohms, Watts.

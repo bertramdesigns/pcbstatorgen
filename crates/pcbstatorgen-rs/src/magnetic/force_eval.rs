@@ -1,8 +1,6 @@
 //! `ForceEvaluator` — evaluates the linear thrust force and torque on the
 //! PCB stator coil as a function of mover position.
 //!
-//! Ports `pcbstatorgen/magnetic/force_eval.py`.
-//!
 //! ## Physical model
 //!
 //! The mover carriage (magnet array) slides in the +X direction over the

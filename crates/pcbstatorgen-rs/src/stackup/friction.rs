@@ -1,4 +1,4 @@
-//! Friction estimator. Ports `pcbstatorgen/stackup/friction.py`.
+//! Friction estimator.
 
 use crate::config::{BearingType, FrictionBudget, LinearMotorConfig};
 
