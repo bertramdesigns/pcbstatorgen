@@ -21,6 +21,7 @@
   import TopologySelector from "./lib/components/TopologySelector.svelte";
   import ParameterPanel from "./lib/components/ParameterPanel.svelte";
   import TravelDiagram from "./lib/components/TravelDiagram.svelte";
+  import FluxDiagram from "./lib/components/FluxDiagram.svelte";
   import CoilPreview from "./lib/components/CoilPreview.svelte";
   import MetricsPanel from "./lib/components/MetricsPanel.svelte";
   import ForceSweepPlot from "./lib/components/ForceSweepPlot.svelte";
@@ -153,6 +154,7 @@
         </div>
       {/if}
       <TravelDiagram {config} />
+      <FluxDiagram {config} />
       <CoilPreview {config} {coils} />
       <ForceSweepPlot result={sweep} />
       <KicadPanel />

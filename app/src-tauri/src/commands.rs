@@ -3,20 +3,23 @@
 //!
 //! ## Command inventory
 //!
-//! | Command                   | Status  | Notes                                    |
-//! |---------------------------|---------|------------------------------------------|
-//! | `compute_config_derived`  | REAL    | Uses core `LinearMotorConfig` methods.  |
-//! | `get_magnet_grades`       | REAL    | Reads core `magnet_grades::MAGNET_GRADES`.|
-//! | `compute_height_stack`    | REAL    | Uses core `HeightStackCalculator`.       |
-//! | `generate_coils`          | REAL    | Uses core `make_coil_generator` + trait. |
-//! | `evaluate_force_sweep`    | REAL    | Uses core `ForceEvaluator` (Lorentz).    |
-//! | `compute_stackup`          | STUB    | No core `StackupCalculator` exists yet.  |
-//! | `compute_power_budget`    | REAL    | Uses core `PowerEstimator`.              |
-//! | `compute_friction`        | REAL    | Uses core `FrictionEstimator`.           |
-//! | `validate_config`         | REAL    | Delegates to core `validate()`.          |
-//! | `connect_kicad`           | REAL    | KiCad IPC: connect + query open board.   |
-//! | `write_coils_to_board`    | REAL    | KiCad IPC: generate + atomic commit.     |
-//! | `ping_kicad`              | REAL    | KiCad IPC: connect + GetVersion.         |
+//! | Command                       | Status        | Notes                                    |
+//! |-------------------------------|---------------|------------------------------------------|
+//! | `compute_config_derived`      | REAL          | Uses core `LinearMotorConfig` methods.  |
+//! | `get_magnet_grades`           | REAL          | Reads core `magnet_grades::MAGNET_GRADES`.|
+//! | `compute_height_stack`        | REAL          | Uses core `HeightStackCalculator`.       |
+//! | `generate_coils`              | REAL          | Uses core `make_coil_generator` + trait. |
+//! | `evaluate_force_sweep`        | REAL          | Uses core `ForceEvaluator` (Lorentz).    |
+//! | `compute_stackup`             | STUB          | No core `StackupCalculator` exists yet.  |
+//! | `compute_power_budget`        | REAL          | Uses core `PowerEstimator`.              |
+//! | `compute_friction`            | REAL          | Uses core `FrictionEstimator`.           |
+//! | `validate_config`             | REAL          | Delegates to core `validate()`.          |
+//! | `connect_kicad`               | REAL          | KiCad IPC: connect + query open board.   |
+//! | `write_coils_to_board`        | REAL          | KiCad IPC: generate + atomic commit.     |
+//! | `ping_kicad`                  | REAL          | KiCad IPC: connect + GetVersion.         |
+//! | `get_board_diagnostics`       | REAL          | KiCad IPC: live board snapshot.          |
+//! | `validate_write_preconditions`| REAL (pure)   | Config-vs-board rule check (no IPC).     |
+//! | `preview_coils`               | REAL (pure)   | Dry-run coil geometry preview (no IPC).  |
 //!
 //! ## Threading
 //!
@@ -37,7 +40,9 @@
 use crate::ipc::*;
 
 use pcbstatorgen_rs::geometry::make_coil_generator;
-use pcbstatorgen_rs::magnetic::{CommutationMode as CoreCommutationMode, ForceEvaluator};
+use pcbstatorgen_rs::magnetic::{
+    CommutationMode as CoreCommutationMode, ForceEvaluator, MagnetArray,
+};
 use pcbstatorgen_rs::stackup::{FrictionEstimator, HeightStackCalculator, PowerEstimator};
 use pcbstatorgen_rs::kicad::{
     BoardHandle, DocumentSpecifier, DocumentType, KiCadClient,
@@ -236,7 +241,9 @@ pub async fn evaluate_force_sweep(
         let coils = gen.generate(&core, 0);
 
         let mut evaluator = ForceEvaluator::new(n_positions, meshing, commutation, 0.0);
-        let result = evaluator.evaluate(&core, &coils);
+        let result = evaluator
+            .evaluate(&core, &coils)
+            .map_err(|e| format!("force_sweep self-calibration failed: {e}"))?;
 
         let n_phases = result.n_phases;
         let mean = result.mean_thrust_n();
@@ -386,10 +393,31 @@ pub struct KicadConnectionResult {
 }
 
 /// KiCad write result.
+///
+/// `commit_id` is `"atomic-commit"` on a real write and
+/// `"(dry run - no commit)"` when `write_coils_to_board` was called with
+/// `dry_run = true`. In dry-run mode, `items_created` is always 0 and
+/// `items_attempted` is the number of items the writer *would* have created
+/// (the UI uses this to show "N items would be written" before the real
+/// write).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct KicadWriteResult {
+    pub items_attempted: u32,
     pub items_created: u32,
+    /// Up to 1000 per-item failure messages from KiCad. Empty when
+    /// `items_created == items_attempted`. The full count of failures is
+    /// always `items_attempted - items_created` even if only a subset are
+    /// listed here.
+    /// Always empty in dry-run mode (no items are actually created).
+    pub failures: Vec<String>,
+    /// Summary of all rejection codes from KiCad, sorted by count descending.
+    /// Each entry is `(code, count)` where `code` is the
+    /// `ItemStatusCode` (1=OK, 2=invalid type, 3=existing, 4=non-existent,
+    /// 5=immutable, 7=invalid data). Empty when all items succeeded.
+    pub failure_summary: Vec<(i32, u32)>,
+    /// Commit ID shown in KiCad's undo stack. `"atomic-commit"` on a real
+    /// write, `"(dry run - no commit)"` on a dry run.
     pub commit_id: String,
 }
 
@@ -471,11 +499,19 @@ pub async fn connect_kicad() -> Result<KicadConnectionResult, String> {
 /// real `make_coil_generator`, and writes the items atomically via
 /// `BoardHandle::write_coils` (single Ctrl+Z undo step).
 ///
+/// When `dry_run` is `true`, the items are still generated and counted but
+/// no commit is sent to KiCad — the returned `KicadWriteResult` has
+/// `commit_id = "(dry run - no commit)"` and `items_created = 0`. This is
+/// the backend half of the UI's "Preview" workflow; the
+/// `preview_coils` command is the more detailed dry-run that also returns
+/// per-layer tallies.
+///
 /// Uses `config.num_layers` (not `max_layers`) for the layer count, since the
 /// user may select fewer layers than the maximum.
 #[tauri::command]
 pub async fn write_coils_to_board(
     config: LinearMotorConfigIpc,
+    dry_run: bool,
 ) -> Result<KicadWriteResult, String> {
     let core = config.to_core();
     let num_layers = config.num_layers;
@@ -495,17 +531,121 @@ pub async fn write_coils_to_board(
             .map_err(|e| format!("No open PCB to write to: {e}"))?;
 
         let mut board = BoardHandle::new(&mut client, doc);
-        let items_created = board
+
+        if dry_run {
+            // No IPC commit / create; just count the items that would have
+            // been written. The connection establishment above is wasted in
+            // dry-run mode but harmless (no KiCad commands are sent).
+            let result = board
+                .write_coils_dry_run(&coils, &core)
+                .map_err(|e| format!("KiCad write_coils_dry_run failed: {e}"))?;
+            return Ok(KicadWriteResult {
+                items_attempted: result.items_attempted,
+                items_created: result.items_created,
+                failures: result.failures,
+                failure_summary: result.failure_summary,
+                commit_id: "(dry run - no commit)".to_string(),
+            });
+        }
+
+        let result = board
             .write_coils(&coils, &core)
             .map_err(|e| format!("KiCad write_coils failed: {e}"))?;
 
         Ok(KicadWriteResult {
-            items_created,
+            items_attempted: result.items_attempted,
+            items_created: result.items_created,
+            failures: result.failures,
+            failure_summary: result.failure_summary,
             commit_id: "atomic-commit".to_string(),
         })
     })
     .await
     .map_err(|e| format!("write_coils_to_board worker failed: {e}"))?
+}
+
+// ===========================================================================
+// Board diagnostics (Phase 7 — robust KiCad connection, WP-1.B)
+// ===========================================================================
+
+/// Get the current board's diagnostics (layer count, edge cuts, net classes).
+///
+/// Connects to KiCad, queries the open PCB, and returns a `BoardDiagnosticsIpc`
+/// snapshot. The edge-cut bounding box and net-class list are not yet
+/// queryable via the KiCad 10 IPC, so they default to `0.0` / empty — a
+/// `// TODO` in the core marks the spot for the real query.
+#[tauri::command]
+pub async fn get_board_diagnostics() -> Result<BoardDiagnosticsIpc, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut client = KiCadClient::new(None, None, 5000);
+        client
+            .connect()
+            .map_err(|e| format!("KiCad connection failed: {e}"))?;
+        let doc = get_open_pcb_document(&mut client)
+            .map_err(|e| format!("No open PCB: {e}"))?;
+        let mut board = BoardHandle::new(&mut client, doc);
+        pcbstatorgen_rs::kicad::get_board_diagnostics(&mut board)
+            .map(|d| BoardDiagnosticsIpc::from_core(&d))
+            .map_err(|e| format!("get_board_diagnostics failed: {e}"))
+    })
+    .await
+    .map_err(|e| format!("get_board_diagnostics worker failed: {e}"))?
+}
+
+/// Validate the config against the current board and return a list of
+/// warnings/recommendations. Pure (no IPC); just runs the rules.
+///
+/// The frontend typically calls `get_board_diagnostics` first, then passes
+/// the result back into this command before showing the "Write to Board"
+/// button. The returned `PreconditionWarningIpc` entries are colour-coded
+/// by `level` (info / warning / error) and may include a `field` key the
+/// UI uses to highlight the offending input control.
+#[tauri::command]
+pub async fn validate_write_preconditions(
+    config: LinearMotorConfigIpc,
+    diagnostics: BoardDiagnosticsIpc,
+) -> Result<Vec<PreconditionWarningIpc>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let core = config.to_core();
+        let diags_core = pcbstatorgen_rs::kicad::BoardDiagnostics {
+            board_name: diagnostics.board_name,
+            copper_layer_count: diagnostics.copper_layer_count,
+            board_x_min_mm: diagnostics.board_x_min_mm,
+            board_x_max_mm: diagnostics.board_x_max_mm,
+            board_y_min_mm: diagnostics.board_y_min_mm,
+            board_y_max_mm: diagnostics.board_y_max_mm,
+            available_net_classes: diagnostics.available_net_classes,
+        };
+        let warnings =
+            pcbstatorgen_rs::kicad::validate_write_preconditions(&core, &diags_core);
+        Ok(warnings
+            .iter()
+            .map(PreconditionWarningIpc::from_core)
+            .collect())
+    })
+    .await
+    .map_err(|e| format!("validate_write_preconditions worker failed: {e}"))?
+}
+
+/// Preview the coil geometry that WOULD be written (no IPC, no KiCad
+/// roundtrip). Pure dry-run: builds the same `PhaseCoil` set the writer
+/// would produce, and returns a per-layer tally (phase count, track count,
+/// via count) plus a `topology` label and any pre-condition warnings.
+///
+/// The full `PhaseCoil` geometry is *not* carried on the wire here — the
+/// UI calls `generate_coils` separately if it needs the raw segments.
+#[tauri::command]
+pub async fn preview_coils(config: LinearMotorConfigIpc) -> Result<CoilPreviewIpc, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let core = config.to_core();
+        let num_layers = config.num_layers;
+        match pcbstatorgen_rs::kicad::preview_coils(&core, num_layers) {
+            Ok(p) => Ok(CoilPreviewIpc::from_core(&p)),
+            Err(e) => Err(format!("preview_coils failed: {e}")),
+        }
+    })
+    .await
+    .map_err(|e| format!("preview_coils worker failed: {e}"))?
 }
 
 /// Ping KiCad and return the version string.
@@ -541,4 +681,82 @@ pub async fn ping_kicad() -> Result<KicadPingResult, String> {
     })
     .await
     .map_err(|e| format!("ping_kicad worker failed: {e}"))?
+}
+
+// ===========================================================================
+// sample_b_field — REAL (MagnetArray::bfield_grid via physics adapter) — WP4
+// ===========================================================================
+
+/// Hard cap on `n_x * n_z` to prevent runaway sampling. 24×12 = 288 is
+/// the WP5 default; 4096 is the upper bound before the async runtime
+/// blocks. Configurable per-call via the JS wrapper.
+const SAMPLE_B_FIELD_GRID_CAP: usize = 4096;
+
+/// Sample the B-field on an X–Z grid at the board centre-line and return
+/// the field vectors + positions as a flat row-major array.
+///
+/// The flux-viz backend for the WP5 `FluxDiagram` Svelte component. The
+/// core `MagnetArray::bfield_grid` routes through the
+/// `pcbstatorgen_rs::physics` magba adapter and dispatches on
+/// `MagnetArrangement`, so all four arrangements (Alternating,
+/// AlternatingBackIron, Halbach, HalbachBackIron) are reflected.
+///
+/// **Grid cap:** `n_x * n_z` must be ≤ 4096. Returns `Err("grid too large")`
+/// otherwise. (24×12 = 288 is the recommended resolution; the cap is a
+/// safety net against runaway sliders.)
+#[tauri::command]
+pub async fn sample_b_field(
+    config: LinearMotorConfigIpc,
+    n_x: usize,
+    n_z: usize,
+    x_extent_m: [f64; 2],
+    z_extent_m: [f64; 2],
+) -> Result<BFieldGridIpc, String> {
+    if n_x < 2 || n_z < 2 {
+        return Err(format!(
+            "grid too small: n_x={n_x} n_z={n_z}, need >= 2 each"
+        ));
+    }
+    if n_x * n_z > SAMPLE_B_FIELD_GRID_CAP {
+        return Err(format!(
+            "grid too large: {n_x}×{n_z} = {} > {SAMPLE_B_FIELD_GRID_CAP}",
+            n_x * n_z
+        ));
+    }
+    let core = config.to_core();
+    tauri::async_runtime::spawn_blocking(move || {
+        // Build linspaces from extents.
+        let x_sample: Vec<f64> = linspace(x_extent_m[0], x_extent_m[1], n_x);
+        let z_sample: Vec<f64> = linspace(z_extent_m[0], z_extent_m[1], n_z);
+        // Build MagnetArray, sample 2D grid (row-major, Z slow).
+        let magnet_array = MagnetArray::new(&core);
+        let samples_2d = magnet_array.bfield_grid(&x_sample, &z_sample, 0.0);
+        // Convert to IPC, computing magnitude.
+        let samples_ipc: Vec<BFieldSampleIpc> = samples_2d
+            .iter()
+            .map(BFieldSampleIpc::from_core)
+            .collect();
+        Ok(BFieldGridIpc {
+            samples: samples_ipc,
+            x_extent_m,
+            z_extent_m,
+            arrangement: arrangement_pascal_case(core.magnet_arrangement),
+        })
+    })
+    .await
+    .map_err(|e| format!("sample_b_field join error: {e}"))?
+}
+
+/// `n` evenly-spaced points in `[lo, hi]`. `n == 1` returns `[lo]`,
+/// `n == 0` returns empty. Used by `sample_b_field` to expand the
+/// extents into grid coordinates.
+fn linspace(lo: f64, hi: f64, n: usize) -> Vec<f64> {
+    if n == 0 {
+        return Vec::new();
+    }
+    if n == 1 {
+        return vec![lo];
+    }
+    let dx = (hi - lo) / (n - 1) as f64;
+    (0..n).map(|i| lo + i as f64 * dx).collect()
 }

@@ -20,20 +20,18 @@ You coordinate execution tasks by delegating to the appropriate specialized suba
 
 ### Physics & Hardware Simulation Domain
 
-- **`@pcb-motor-expert`**: Electromagnetics, motor physics, planar coil design strategy, thermal sizing (IPC-2152), and control loop topologies[cite: 5].
-- **`@magnetics-sim-expert`**: High-performance Rust physics math (`magba`, `nalgebra`, `rayon`, `cfsem`) inside `crates/pcbstatorgen-rs/`[cite: 3].
-- **`@magpylib-expert`**: Python-based permanent magnet, Halbach array, and coil distribution physics prototyping[cite: 4].
+- **`@pcb-motor-expert`**: Electromagnetics, motor physics, planar coil design strategy, thermal sizing (IPC-2152), and control loop topologies.
+- **`@magnetics-sim-expert`**: High-performance Rust physics math (`magba`, `nalgebra`, `rayon`, `cfsem`) inside `crates/pcbstatorgen-rs/`.
+- **`@magpylib-expert`**: Python-base cross referencing work done by the `@magnetics-sim-expert` agent for permanent magnet, Halbach array, and coil distribution physics prototyping.
 
 ### Application & Interface Domain
 
-- **`@tauri-interface`**: Orchestrating IPC data flow between Svelte and Rust, managing Tauri commands, and configuring `serde` serialization models[cite: 9].
-- **`@svelte-file-editor`**: Proactive creation, editing, and validation of Svelte 5 reactive frontend components using Svelte MCP tools[cite: 8].
-- **`@streamlit-expert`**: Building quick analytical python-driven dashboards and internal simulation tooling[cite: 7].
+- **`@tauri-interface`**: Orchestrating IPC data flow between Svelte and Rust, managing Tauri commands, and configuring `serde` serialization models.
+- **`@svelte-file-editor`**: Proactive creation, editing, and validation of Svelte 5 reactive frontend components using Svelte MCP tools.
 
 ### KiCad Automation Domain
 
-- **`@kicad-addon-expert`**: Structural layout and `metadata.json` schemas for local, internal KiCad 10 Action Plugins and scripts[cite: 1].
-- **`@kicad-ipc-expert`**: Automated programmatic schematic and PCB trace generation using the KiCad 10 Protocol Buffers over `nng` interface[cite: 2].
+- **`@kicad-ipc-expert`**: Automated programmatic schematic and PCB trace generation using the KiCad 10 Protocol Buffers over `nng` interface.
 
 ## 3. Delegation Framework
 

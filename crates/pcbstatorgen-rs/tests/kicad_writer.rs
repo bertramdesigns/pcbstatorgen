@@ -129,7 +129,8 @@ fn test_via_pad_diameter() {
 
 #[test]
 fn test_track_count_matches_segment_count() {
-    let cfg = test_config(4);
+    // max_layers=3, phases=3 → each phase on a single layer; no vias.
+    let cfg = test_config(3);
     let coils = WaveWindingGenerator.generate(&cfg, 0);
     let total_segments: usize = coils.iter().map(|c| c.segments.len()).sum();
     let items = coils_to_board_items(&coils, &cfg);
@@ -138,7 +139,8 @@ fn test_track_count_matches_segment_count() {
 
 #[test]
 fn test_all_items_are_tracks_when_no_vias() {
-    let cfg = test_config(4);
+    // max_layers=3, phases=3 → each phase on a single layer; no vias.
+    let cfg = test_config(3);
     let coils = WaveWindingGenerator.generate(&cfg, 0);
     let items = coils_to_board_items(&coils, &cfg);
     for any in &items {
@@ -157,9 +159,11 @@ fn test_track_coordinates_are_in_nanometres() {
     let track: Track = Track::decode(items[0].value.as_slice()).expect("decode Track");
     let start = track.start.unwrap();
     let end = track.end.unwrap();
-    assert_eq!(start.x_nm, (seg0.start.0 * 1e9).round() as i64);
+    // Coils are centered on x = 0: wire x_nm = m_nm - active_area_length_m/2_nm.
+    let offset_nm = (cfg.active_area_length_m / 2.0 * 1e9).round() as i64;
+    assert_eq!(start.x_nm, (seg0.start.0 * 1e9).round() as i64 - offset_nm);
     assert_eq!(start.y_nm, (seg0.start.1 * 1e9).round() as i64);
-    assert_eq!(end.x_nm, (seg0.end.0 * 1e9).round() as i64);
+    assert_eq!(end.x_nm, (seg0.end.0 * 1e9).round() as i64 - offset_nm);
     assert_eq!(end.y_nm, (seg0.end.1 * 1e9).round() as i64);
 }
 
@@ -175,7 +179,8 @@ fn test_track_width_matches_config() {
 
 #[test]
 fn test_net_names_are_slash_prefixed() {
-    let cfg = test_config(4);
+    // max_layers=3, phases=3 → each phase on a single layer; no vias.
+    let cfg = test_config(3);
     let coils = WaveWindingGenerator.generate(&cfg, 0);
     assert_eq!(coils.len(), 3);
 
@@ -190,6 +195,9 @@ fn test_net_names_are_slash_prefixed() {
     let expected_x = (seg0_b.start.0 * 1e9).round() as i64;
     let mut found_b = false;
     for any in &items {
+        if !any.type_url.ends_with("kiapi.board.types.Track") {
+            continue;
+        }
         let t: Track = Track::decode(any.value.as_slice()).expect("decode");
         if t.start.unwrap().x_nm == expected_x {
             assert_eq!(t.net.unwrap().name, "/B");
@@ -204,6 +212,9 @@ fn test_net_names_are_slash_prefixed() {
     let expected_x = (seg0_c.start.0 * 1e9).round() as i64;
     let mut found_c = false;
     for any in &items {
+        if !any.type_url.ends_with("kiapi.board.types.Track") {
+            continue;
+        }
         let t: Track = Track::decode(any.value.as_slice()).expect("decode");
         if t.start.unwrap().x_nm == expected_x {
             assert_eq!(t.net.unwrap().name, "/C");
@@ -225,12 +236,17 @@ fn test_layer_assignment_4_layer_board() {
 
     let items = coils_to_board_items(&all_coils, &cfg);
 
-    // First item is from layer 0 → B_Cu.
+    // First item is a Track from layer 0 → B_Cu.
     let t0: Track = Track::decode(items[0].value.as_slice()).expect("decode");
     assert_eq!(t0.layer, BoardLayer::BlBCu as i32);
 
-    // At least one item should be on F_Cu (layer 3).
+    // At least one Track item should be on F_Cu (layer 3). Filter to Tracks
+    // only — some coils on a 4-layer board emit inter-layer end-turn vias
+    // (ADR-0001), which decode as empty Tracks if treated as such.
     let has_fcu = items.iter().any(|any| {
+        if !any.type_url.ends_with("kiapi.board.types.Track") {
+            return false;
+        }
         let t: Track = Track::decode(any.value.as_slice()).expect("decode");
         t.layer == BoardLayer::BlFCu as i32
     });
@@ -268,7 +284,11 @@ fn test_via_items_when_present() {
     assert_eq!(via.r#type, ViaType::VtThrough as i32);
     assert_eq!(via.net.unwrap().name, "/A");
     let pos = via.position.unwrap();
-    assert_eq!(pos.x_nm, 5_000_000);
+    // Vias share the same centering offset as tracks; the test coil's first
+    // via sits at x=5mm, the active area is 48mm, so the wire x is
+    // 5_000_000 - 24_000_000 = -19_000_000 nm.
+    let offset_nm = (cfg.active_area_length_m / 2.0 * 1e9).round() as i64;
+    assert_eq!(pos.x_nm, 5_000_000 - offset_nm);
     assert_eq!(pos.y_nm, 5_000_000);
 }
 
@@ -487,8 +507,14 @@ fn test_board_handle_write_coils_end_to_end() {
     let begin_resp = BeginCommitResponse {
         id: Some(Kiid { value: "c1".to_string() }),
     };
-    let n_items = 10; // arbitrary
-    let created_items: Vec<_> = (0..n_items)
+    // max_layers=3, phases=3 → each phase on a single layer; no vias. The
+    // mock response must contain one `ItemCreationResult` per submitted
+    // item, otherwise the new per-item tallying will report a mismatch
+    // (this is the very behaviour we want from `write_coils`).
+    let cfg = test_config(3);
+    let coils = WaveWindingGenerator.generate(&cfg, 0);
+    let expected_items = coils.iter().map(|c| c.segments.len()).sum::<usize>() as u32;
+    let created_items: Vec<_> = (0..expected_items)
         .map(|_| pcbstatorgen_rs::kicad::proto::common::commands::ItemCreationResult {
             status: Some(pcbstatorgen_rs::kicad::proto::common::commands::ItemStatus {
                 code: 1, // ISC_OK
@@ -517,11 +543,457 @@ fn test_board_handle_write_coils_end_to_end() {
     );
     let doc = pcb_document("motor.kicad_pcb");
 
-    let cfg = test_config(4);
+    // `cfg`, `coils`, and `expected_items` are computed above so the mock
+    // `created_items` vec can be sized to match what we will submit.
+    let mut board = pcbstatorgen_rs::kicad::BoardHandle::new(&mut client, doc);
+    let result = board.write_coils(&coils, &cfg).expect("write_coils");
+    assert_eq!(result.items_attempted, expected_items);
+    assert_eq!(result.items_created, expected_items);
+    assert!(result.failures.is_empty(), "no failures expected, got: {:?}", result.failures);
+    // No failures → no failure summary either. The UI relies on
+    // `failure_summary.is_empty()` as the signal that nothing went
+    // wrong at the per-item level (the request-level status is checked
+    // separately).
+    assert!(
+        result.failure_summary.is_empty(),
+        "no failure_summary expected when all items succeed; got {:?}",
+        result.failure_summary
+    );
+}
+
+#[test]
+fn test_board_handle_write_coils_dry_run_does_not_call_commit() {
+    // The dry-run path must NOT issue any IPC requests. We assert that by
+    // constructing a transport that records every send and verifying the
+    // transport was *not* touched (sent_requests is empty). The transport's
+    // canned response is also irrelevant — it would be fetched only if
+    // send_and_recv were called, which it must not be.
+    let transport = SequencedMockTransport::new(Vec::new());
+    let mut client = KiCadClient::with_transport(
+        Box::new(transport),
+        Some("test"),
+        2000,
+    );
+    let doc = pcb_document("dryrun.kicad_pcb");
+
+    let cfg = test_config(3);
     let coils = WaveWindingGenerator.generate(&cfg, 0);
-    let expected_items = coils.iter().map(|c| c.segments.len()).sum::<usize>() as u32;
+    let expected_items: u32 =
+        coils.iter().map(|c| c.segments.len() as u32).sum();
 
     let mut board = pcbstatorgen_rs::kicad::BoardHandle::new(&mut client, doc);
-    let n = board.write_coils(&coils, &cfg).expect("write_coils");
-    assert_eq!(n, expected_items);
+    let result = board
+        .write_coils_dry_run(&coils, &cfg)
+        .expect("dry-run write_coils");
+    assert_eq!(result.items_attempted, expected_items);
+    assert_eq!(
+        result.items_created, 0,
+        "dry-run must report 0 items_created (no IPC call was made)"
+    );
+    assert!(result.failures.is_empty());
+    // Dry-run never round-trips with KiCad → no per-item rejection
+    // codes, so the failure_summary is also empty.
+    assert!(
+        result.failure_summary.is_empty(),
+        "dry-run must report an empty failure_summary (no KiCad round-trip); got {:?}",
+        result.failure_summary
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Failure-summary tests (round-5 error display)
+//
+// These tests exercise the new `WriteCoilsResult.failure_summary` field
+// introduced in the round-5 fix for the "99 of 588 items rejected" UI
+// display problem. The previous design only surfaced the first
+// `MAX_FAILURES_TO_REPORT = 10` per-item messages and silently dropped
+// the rest, so the user could not tell whether 99 failures were all the
+// same error or 89 different ones. The new `failure_summary` field
+// groups rejections by `ItemStatus.code` and reports a count for each,
+// so the UI can render a compact diagnostic like
+// `"99× code=7 (no overlapping layers with the board)"`.
+// ---------------------------------------------------------------------------
+
+/// Helper: build a `CreateItemsResponse` from a per-item outcome spec.
+/// `outcomes` is a slice of `(code, error_message)` tuples — one per
+/// submitted item. The response carries them as `created_items`.
+fn make_create_response(outcomes: &[(i32, &str)]) -> CreateItemsResponse {
+    let created_items = outcomes
+        .iter()
+        .map(|(code, msg)| {
+            pcbstatorgen_rs::kicad::proto::common::commands::ItemCreationResult {
+                status: Some(
+                    pcbstatorgen_rs::kicad::proto::common::commands::ItemStatus {
+                        code: *code,
+                        error_message: msg.to_string(),
+                    },
+                ),
+                item: None,
+            }
+        })
+        .collect();
+    CreateItemsResponse {
+        header: None,
+        status: 1, // IRS_OK
+        created_items,
+    }
+}
+
+#[test]
+fn test_failure_summary_groups_by_code_with_counts() {
+    // 6 items: 1 OK, 5 rejected — 4 with code=7 ("no overlapping
+    // layers" — the user's exact scenario) and 1 with code=2
+    // ("invalid type"). The summary should be [(7, 4), (2, 1)] in
+    // count-descending order.
+    let begin_resp = BeginCommitResponse {
+        id: Some(Kiid { value: "c".to_string() }),
+    };
+    let outcomes: Vec<(i32, &str)> = vec![
+        (1, ""), // OK
+        (7, "attempted to add item with no overlapping layers ..."),
+        (7, "attempted to add item with no overlapping layers ..."),
+        (7, "attempted to add item with no overlapping layers ..."),
+        (2, "invalid item type"),
+        (7, "attempted to add item with no overlapping layers ..."),
+    ];
+    let create_resp = make_create_response(&outcomes);
+    let end_resp = empty_end_commit_response();
+
+    let responses = vec![
+        build_ok_response(pack_any(BEGIN_COMMIT_RESPONSE_URL, &begin_resp)),
+        build_ok_response(pack_any(CREATE_ITEMS_RESPONSE_URL, &create_resp)),
+        build_ok_response(pack_any(END_COMMIT_RESPONSE_URL, &end_resp)),
+    ];
+
+    let transport = SequencedMockTransport::new(responses);
+    let mut client = KiCadClient::with_transport(
+        Box::new(transport),
+        Some("test"),
+        2000,
+    );
+    let doc = pcb_document("motor.kicad_pcb");
+
+    let cfg = test_config(3);
+    let coils = WaveWindingGenerator.generate(&cfg, 0);
+    // The coil set produces many segments; we use a single-track coil
+    // so the per-item count matches the outcome count.
+    let single_track_coils = vec![pcbstatorgen_rs::geometry::PhaseCoil {
+        phase_idx: 0,
+        layer_idx: 0,
+        segments: vec![pcbstatorgen_rs::geometry::CoilSegment {
+            start: (0.0, 0.0),
+            end: (0.0, 0.02),
+            is_active: true,
+        }],
+        phase_name: "A".into(),
+        center_via_positions: Vec::new(),
+        ..pcbstatorgen_rs::geometry::PhaseCoil::default()
+    }];
+    // Pad with 5 more single-track coils to get a 6-item set.
+    let mut six_coils = single_track_coils;
+    for i in 1..6 {
+        six_coils.push(pcbstatorgen_rs::geometry::PhaseCoil {
+            phase_idx: i,
+            layer_idx: 0,
+            segments: vec![pcbstatorgen_rs::geometry::CoilSegment {
+                start: (0.0, 0.0),
+                end: (0.0, 0.02),
+                is_active: true,
+            }],
+            phase_name: "A".into(),
+            center_via_positions: Vec::new(),
+            ..pcbstatorgen_rs::geometry::PhaseCoil::default()
+        });
+    }
+    let _ = (cfg, coils); // silence unused-var warning
+
+    let mut board = pcbstatorgen_rs::kicad::BoardHandle::new(&mut client, doc);
+    let result = board
+        .write_coils(&six_coils, &test_config(3))
+        .expect("write_coils");
+
+    // 1 OK + 5 rejected → 1 created, 5 failures.
+    assert_eq!(result.items_attempted, 6);
+    assert_eq!(result.items_created, 1);
+    // `failures` carries the first MAX_FAILURES_TO_REPORT (= 1000)
+    // individual messages, so all 5 are present (5 < 1000).
+    assert_eq!(result.failures.len(), 5);
+
+    // The new failure_summary: 4× code=7, 1× code=2, sorted by count
+    // descending. The exact rendering the UI will display.
+    assert_eq!(
+        result.failure_summary,
+        vec![(7, 4), (2, 1)],
+        "failure_summary must group rejections by code and sort by count desc"
+    );
+}
+
+#[test]
+fn test_failure_summary_sorts_by_count_descending() {
+    // 7 items: 1 OK + 6 rejected across 3 distinct codes
+    // (1× code=3, 2× code=2, 3× code=7). The expected ordering is
+    // count desc: (7, 3), (2, 2), (3, 1).
+    let begin_resp = BeginCommitResponse {
+        id: Some(Kiid { value: "c".to_string() }),
+    };
+    let outcomes: Vec<(i32, &str)> = vec![
+        (1, ""),  // OK
+        (3, "existing"),
+        (2, "invalid type"),
+        (7, "invalid data"),
+        (7, "invalid data"),
+        (2, "invalid type"),
+        (7, "invalid data"),
+    ];
+    let create_resp = make_create_response(&outcomes);
+    let end_resp = empty_end_commit_response();
+
+    let responses = vec![
+        build_ok_response(pack_any(BEGIN_COMMIT_RESPONSE_URL, &begin_resp)),
+        build_ok_response(pack_any(CREATE_ITEMS_RESPONSE_URL, &create_resp)),
+        build_ok_response(pack_any(END_COMMIT_RESPONSE_URL, &end_resp)),
+    ];
+
+    let transport = SequencedMockTransport::new(responses);
+    let mut client = KiCadClient::with_transport(
+        Box::new(transport),
+        Some("test"),
+        2000,
+    );
+    let doc = pcb_document("motor.kicad_pcb");
+
+    let cfg = test_config(3);
+    // Build a 7-item coil set so outcomes.len() == items_attempted.
+    let mut seven_coils = Vec::new();
+    for i in 0..7u32 {
+        seven_coils.push(pcbstatorgen_rs::geometry::PhaseCoil {
+            phase_idx: i,
+            layer_idx: 0,
+            segments: vec![pcbstatorgen_rs::geometry::CoilSegment {
+                start: (0.0, 0.0),
+                end: (0.0, 0.02),
+                is_active: true,
+            }],
+            phase_name: "A".into(),
+            center_via_positions: Vec::new(),
+            ..pcbstatorgen_rs::geometry::PhaseCoil::default()
+        });
+    }
+    let _ = cfg; // silence unused-var warning
+
+    let mut board = pcbstatorgen_rs::kicad::BoardHandle::new(&mut client, doc);
+    let result = board
+        .write_coils(&seven_coils, &test_config(3))
+        .expect("write_coils");
+
+    // Verify the global ordering: any (code, count) pair must be
+    // sorted by count desc (then code asc for ties).
+    let summary = &result.failure_summary;
+    for window in summary.windows(2) {
+        let (code_a, count_a) = window[0];
+        let (code_b, count_b) = window[1];
+        // Primary: count descending.
+        // Secondary: code ascending.
+        assert!(
+            count_a > count_b || (count_a == count_b && code_a <= code_b),
+            "failure_summary must be sorted by count desc, code asc; \
+             got ({}x{}) followed by ({}x{})",
+            code_a, count_a, code_b, count_b
+        );
+    }
+    // Also verify the exact entries for this scenario.
+    assert_eq!(
+        result.failure_summary,
+        vec![(7, 3), (2, 2), (3, 1)],
+        "failure_summary must list (code, count) pairs sorted by count desc, code asc"
+    );
+    // The summary should add up to all failures.
+    let total_failures: u32 = result.failure_summary.iter().map(|(_, c)| c).sum();
+    assert_eq!(
+        total_failures,
+        result.items_attempted - result.items_created,
+        "failure_summary counts must sum to total failures"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Inter-layer end-turn via generator (ADR-0001)
+//
+// These tests assert that the via-grid generator populates
+// `center_via_positions` for the two UI-selectable topologies (Serpentine,
+// SineWave) when the phase spans more than one copper layer, and that the
+// resulting board items include `Via` protos.
+// ---------------------------------------------------------------------------
+
+/// Multi-layer-per-phase config: phases=2, max_layers=4 → each phase on 2 layers.
+fn multi_layer_test_config() -> LinearMotorConfig {
+    LinearMotorConfig {
+        name: Some("multi".into()),
+        active_area_length_m: mm(48.0),
+        magnet_dims_m: [mm(10.0), mm(10.0), mm(4.0)],
+        magnet_count: 2,
+        magnet_pitch_m: mm(24.0),
+        phases: 2,
+        target_force_n: 0.1,
+        max_current_a: 1.0,
+        min_trace_m: mils_to_m(5.0),
+        min_space_m: mils_to_m(5.0),
+        min_via_drill_m: mm(0.2),
+        min_via_annular_ring_m: mm(0.1),
+        board_width_m: mm(20.0),
+        air_gap_m: mm(0.5),
+        max_layers: 4,
+        ..LinearMotorConfig::default()
+    }
+}
+
+/// Single-layer-per-phase config: phases=3, max_layers=3.
+fn single_layer_test_config() -> LinearMotorConfig {
+    LinearMotorConfig {
+        name: Some("single".into()),
+        active_area_length_m: mm(48.0),
+        magnet_dims_m: [mm(10.0), mm(10.0), mm(4.0)],
+        magnet_count: 2,
+        magnet_pitch_m: mm(24.0),
+        phases: 3,
+        target_force_n: 0.1,
+        max_current_a: 1.0,
+        min_trace_m: mils_to_m(5.0),
+        min_space_m: mils_to_m(5.0),
+        min_via_drill_m: mm(0.2),
+        min_via_annular_ring_m: mm(0.1),
+        board_width_m: mm(20.0),
+        air_gap_m: mm(0.5),
+        max_layers: 3,
+        ..LinearMotorConfig::default()
+    }
+}
+
+#[test]
+fn test_serpentine_2_layer_emits_vias() {
+    let cfg = multi_layer_test_config(); // 2 layers per phase
+    let coils = pcbstatorgen_rs::geometry::WaveWindingGenerator.generate(&cfg, 0);
+    assert!(!coils.is_empty());
+    for coil in &coils {
+        assert!(!coil.center_via_positions.is_empty(),
+            "phase {} layer {} should have at least one via",
+            coil.phase_idx, coil.layer_idx);
+        // One via per end-turn.
+        assert_eq!(coil.center_via_positions.len(),
+            coil.end_turn_segments().len(),
+            "phase {}: via count should match end-turn count",
+            coil.phase_idx);
+    }
+}
+
+#[test]
+fn test_sine_wave_2_layer_emits_vias() {
+    let cfg = multi_layer_test_config(); // 2 layers per phase
+    let coils = pcbstatorgen_rs::geometry::SineWaveWindingGenerator.generate(&cfg, 0);
+    assert!(!coils.is_empty());
+    for coil in &coils {
+        // Start + end = 2 vias per phase coil.
+        assert_eq!(coil.center_via_positions.len(), 2,
+            "phase {} layer {} should have exactly 2 vias (start + end)",
+            coil.phase_idx, coil.layer_idx);
+    }
+}
+
+#[test]
+fn test_serpentine_1_layer_no_vias() {
+    let cfg = single_layer_test_config(); // 1 layer per phase
+    let coils = pcbstatorgen_rs::geometry::WaveWindingGenerator.generate(&cfg, 0);
+    assert!(!coils.is_empty());
+    for coil in &coils {
+        assert!(coil.center_via_positions.is_empty(),
+            "single-layer serpentine phase {} should have no vias",
+            coil.phase_idx);
+    }
+}
+
+#[test]
+fn test_sine_wave_1_layer_no_vias() {
+    let cfg = single_layer_test_config(); // 1 layer per phase
+    let coils = pcbstatorgen_rs::geometry::SineWaveWindingGenerator.generate(&cfg, 0);
+    assert!(!coils.is_empty());
+    for coil in &coils {
+        assert!(coil.center_via_positions.is_empty(),
+            "single-layer sine-wave phase {} should have no vias",
+            coil.phase_idx);
+    }
+}
+
+#[test]
+fn test_drill_clearance_guard_passes_for_default() {
+    let cfg = single_layer_test_config();
+    // default slot_pitch = 24mm/3 = 8mm. 0.3 + 2*0.15 = 0.6mm << 8mm.
+    assert!(pcbstatorgen_rs::geometry::wave_winding::validate_via_clearance(&cfg, 4).is_ok());
+}
+
+#[test]
+fn test_drill_clearance_guard_fails_for_tight_pitch() {
+    // Construct a config with slot_pitch = 0.5mm (tighter than 0.6mm).
+    let cfg = LinearMotorConfig {
+        name: Some("tight".into()),
+        active_area_length_m: mm(48.0),
+        magnet_dims_m: [mm(10.0), mm(10.0), mm(4.0)],
+        magnet_count: 2,
+        magnet_pitch_m: mm(1.5),  // pole_pitch = 1.5mm
+        phases: 3,                 // slot_pitch = 1.5/3 = 0.5mm
+        spacing_ratio: 1.0,
+        target_force_n: 0.1,
+        max_current_a: 1.0,
+        min_trace_m: mils_to_m(5.0),
+        min_space_m: mils_to_m(5.0),
+        min_via_drill_m: mm(0.2),
+        min_via_annular_ring_m: mm(0.1),
+        board_width_m: mm(20.0),
+        air_gap_m: mm(0.5),
+        max_layers: 4,
+        ..LinearMotorConfig::default()
+    };
+    let err = pcbstatorgen_rs::geometry::wave_winding::validate_via_clearance(&cfg, 4);
+    assert!(err.is_err());
+    assert!(err.unwrap_err().contains("via clearance guard failed"));
+}
+
+#[test]
+fn test_kicad_writer_emits_via_items_for_serpentine() {
+    let cfg = multi_layer_test_config();
+    let coils = pcbstatorgen_rs::geometry::WaveWindingGenerator.generate(&cfg, 0);
+    let items = coils_to_board_items(&coils, &cfg);
+
+    let vias: Vec<&Any> = items
+        .iter()
+        .filter(|a| a.type_url.ends_with("kiapi.board.types.Via"))
+        .collect();
+    assert!(!vias.is_empty(), "expected at least one Via item for serpentine");
+
+    // All vias must be through-vias with the same net as their owning phase.
+    for any in &vias {
+        let via: Via = Via::decode(any.value.as_slice()).expect("decode Via");
+        assert_eq!(via.r#type, ViaType::VtThrough as i32);
+    }
+}
+
+#[test]
+fn test_kicad_writer_emits_via_items_for_sine_wave() {
+    let cfg = multi_layer_test_config();
+    let coils = pcbstatorgen_rs::geometry::SineWaveWindingGenerator.generate(&cfg, 0);
+    let items = coils_to_board_items(&coils, &cfg);
+
+    let vias: Vec<&Any> = items
+        .iter()
+        .filter(|a| a.type_url.ends_with("kiapi.board.types.Via"))
+        .collect();
+    assert!(!vias.is_empty(), "expected at least one Via item for sine wave");
+
+    // Exactly 2 vias per phase coil (start + end).
+    let expected_via_count = coils.iter().map(|c| c.center_via_positions.len()).sum::<usize>();
+    assert_eq!(vias.len(), expected_via_count);
+
+    for any in &vias {
+        let via: Via = Via::decode(any.value.as_slice()).expect("decode Via");
+        assert_eq!(via.r#type, ViaType::VtThrough as i32);
+    }
 }

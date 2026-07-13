@@ -2,9 +2,24 @@
  * pcbstatorgen — Tauri invoke wrappers with mock fallback.
  *
  * Every call attempts the real Tauri backend command (phase G). If the
- * command is unavailable (dev without backend, or not yet wired), a
- * deterministic mock is returned so the dashboard is fully interactive
- * during frontend-only development.
+ * Tauri runtime is not available (frontend-only dev mode, e.g. `vite dev`
+ * outside of `tauri dev`), a deterministic mock is returned so the
+ * dashboard stays interactive.
+ *
+ * ## Error handling
+ *
+ * **Critical IPC calls** (the ones the user can act on, e.g. the
+ * "Write to Board" button) **surface real errors** to the UI. We do NOT
+ * silently swallow them — the historical `try { invoke() } catch { mock }`
+ * pattern is what caused the "0 of 0 written" bug, because a real Tauri
+ * failure looked identical to "everything worked but produced 0 items".
+ * The mock fallback is only used when the Tauri runtime itself is
+ * unavailable (see [`isTauriAvailable`]).
+ *
+ * **Background physics calls** (force sweep, coil generation, etc.) keep
+ * the mock fallback because (a) they run on every slider change and (b)
+ * their failure is recoverable — the user just sees stale data, not a
+ * broken write.
  */
 
 import { invoke } from "@tauri-apps/api/core";
@@ -20,6 +35,10 @@ import type {
   KicadConnection,
   KicadWriteResult,
   KicadPingResult,
+  BFieldGridDto,
+  BoardDiagnostics,
+  PreconditionWarning,
+  CoilPreview,
 } from "./types";
 
 // ---------------------------------------------------------------------------
@@ -30,109 +49,181 @@ export const mm = (v: number): number => v / 1000.0;
 export const to_mm = (v: number): number => v * 1000.0;
 
 // ---------------------------------------------------------------------------
+// Tauri runtime detection
+// ---------------------------------------------------------------------------
+
+/**
+ * `true` when the page is running inside the Tauri shell, `false` for
+ * plain `vite dev` (or any browser without the Tauri IPC bridge).
+ *
+ * The Tauri v2 runtime injects `window.__TAURI_INTERNALS__`; its mere
+ * presence is the canonical "we have a backend" signal. We use this
+ * instead of a try/catch around `invoke()` so we can distinguish
+ * "no backend available" (return mock) from "backend returned an error"
+ * (let the error propagate to the UI).
+ */
+export function isTauriAvailable(): boolean {
+  if (typeof window === "undefined") return false;
+  return (window as unknown as { __TAURI_INTERNALS__?: unknown })
+    .__TAURI_INTERNALS__ !== undefined;
+}
+
+// ---------------------------------------------------------------------------
 // Backend commands
+//
+// All background physics calls use the `isTauriAvailable()` gate: when
+// running in a plain browser (vite dev), return the deterministic mock.
+// When running inside Tauri, call `invoke()` and let the error propagate
+// — the App.svelte `recompute()` has its own try/catch that surfaces the
+// error in the UI banner.
 // ---------------------------------------------------------------------------
 
 export async function computeConfigDerived(
   config: LinearMotorConfig,
 ): Promise<ConfigDerived> {
-  try {
-    return await invoke<ConfigDerived>("compute_config_derived", { config });
-  } catch {
-    return mockConfigDerived(config);
-  }
+  if (!isTauriAvailable()) return mockConfigDerived(config);
+  return await invoke<ConfigDerived>("compute_config_derived", { config });
 }
 
 export async function generateCoils(
   config: LinearMotorConfig,
 ): Promise<CoilPathDto> {
-  try {
-    return await invoke<CoilPathDto>("generate_coils", { config });
-  } catch {
-    return mockCoils(config);
-  }
+  if (!isTauriAvailable()) return mockCoils(config);
+  return await invoke<CoilPathDto>("generate_coils", { config });
 }
 
 export async function evaluateForceSweep(
   config: LinearMotorConfig,
 ): Promise<ForceSweepResult> {
-  try {
-    return await invoke<ForceSweepResult>("evaluate_force_sweep", { config });
-  } catch {
-    return mockForceSweep(config);
-  }
+  if (!isTauriAvailable()) return mockForceSweep(config);
+  return await invoke<ForceSweepResult>("evaluate_force_sweep", { config });
 }
 
 export async function computeHeightStack(
   config: LinearMotorConfig,
 ): Promise<HeightStackResultDto> {
-  try {
-    return await invoke<HeightStackResultDto>("compute_height_stack", {
-      config,
-    });
-  } catch {
-    return mockHeightStack(config);
-  }
+  if (!isTauriAvailable()) return mockHeightStack(config);
+  return await invoke<HeightStackResultDto>("compute_height_stack", { config });
 }
 
 export async function computePowerBudget(
   config: LinearMotorConfig,
 ): Promise<PowerBudgetDto> {
-  try {
-    return await invoke<PowerBudgetDto>("compute_power_budget", { config });
-  } catch {
-    return mockPowerBudget(config);
-  }
+  if (!isTauriAvailable()) return mockPowerBudget(config);
+  return await invoke<PowerBudgetDto>("compute_power_budget", { config });
 }
 
 export async function computeFriction(
   config: LinearMotorConfig,
 ): Promise<FrictionBudgetDto> {
-  try {
-    return await invoke<FrictionBudgetDto>("compute_friction", { config });
-  } catch {
-    return mockFriction(config);
-  }
+  if (!isTauriAvailable()) return mockFriction(config);
+  return await invoke<FrictionBudgetDto>("compute_friction", { config });
 }
 
 export async function computeStackup(
   config: LinearMotorConfig,
 ): Promise<StackupResultDto> {
-  try {
-    return await invoke<StackupResultDto>("compute_stackup", { config });
-  } catch {
-    return mockStackup(config);
-  }
+  if (!isTauriAvailable()) return mockStackup(config);
+  return await invoke<StackupResultDto>("compute_stackup", { config });
 }
 
 // ---------------------------------------------------------------------------
 // KiCad IPC API (phase 7 — board write via KiCad 10 IPC socket)
+//
+// These are user-facing IPC calls (the "Write to Board" / "Connect to
+// KiCad" buttons). Real Tauri errors MUST propagate to the UI so the
+// "0 of 0 written" bug (and its siblings) can't be silently hidden
+// behind a synthetic zero. The mock fallback is only used when the Tauri
+// runtime itself is absent (`vite dev` without the Tauri shell).
 // ---------------------------------------------------------------------------
 
 export async function connectKicad(): Promise<KicadConnection> {
-  try {
-    return await invoke<KicadConnection>("connect_kicad");
-  } catch {
+  if (!isTauriAvailable()) {
     return { connected: false, board_name: "(not connected)", copper_layers: 0 };
   }
+  return await invoke<KicadConnection>("connect_kicad");
 }
 
+/**
+ * Generate coils from the config and write them to the open KiCad board.
+ *
+ * Pass `dryRun: true` to count the items without sending a commit
+ * (`commit_id === "(dry run - no commit)"`, `items_created === 0`). The
+ * Rust side still establishes a KiCad connection in dry-run mode — it
+ * just skips the `Commit` / `create_items` IPC. Use [`previewCoils`]
+ * for a no-IPC dry run (useful when KiCad is not open).
+ *
+ * **No try/catch here.** A real Tauri error (e.g. "no board open",
+ * "connection refused") propagates to the caller — that's the fix for
+ * the historical "0 of 0 written" bug.
+ */
 export async function writeCoilsToBoard(
   config: LinearMotorConfig,
+  dryRun: boolean = false,
 ): Promise<KicadWriteResult> {
-  try {
-    return await invoke<KicadWriteResult>("write_coils_to_board", { config });
-  } catch {
-    return { items_created: 0, commit_id: "" };
+  if (!isTauriAvailable()) {
+    return {
+      items_attempted: 0,
+      items_created: 0,
+      failures: ["Backend not available — open the Tauri shell to write to KiCad"],
+      commit_id: "",
+    };
   }
+  return await invoke<KicadWriteResult>("write_coils_to_board", {
+    config,
+    dryRun,
+  });
 }
 
 export async function pingKicad(): Promise<KicadPingResult> {
-  try {
-    return await invoke<KicadPingResult>("ping_kicad");
-  } catch {
-    return { ok: false, version: "" };
-  }
+  if (!isTauriAvailable()) return { ok: false, version: "" };
+  return await invoke<KicadPingResult>("ping_kicad");
+}
+
+// ---------------------------------------------------------------------------
+// Board diagnostics + preconditions + preview — WP-KiCad
+//
+// The three new commands added in WP-1.B. They give the UI a clear
+// "here's what the board looks like" + "here's what would go wrong"
+// signal *before* the user clicks the real "Write to Board" button.
+// ---------------------------------------------------------------------------
+
+/**
+ * Live snapshot of the open KiCad board (name, layer count, edge-cut
+ * bounding box, net classes). Connects to KiCad each call — cache in the
+ * UI if you need it more than once per write.
+ */
+export async function getBoardDiagnostics(): Promise<BoardDiagnostics> {
+  if (!isTauriAvailable()) return mockBoardDiagnostics();
+  return await invoke<BoardDiagnostics>("get_board_diagnostics");
+}
+
+/**
+ * Compare the user's `config` against the live `diagnostics` and return
+ * a list of pre-condition warnings (info / warning / error). Pure on
+ * the Rust side — no IPC. Errors propagate.
+ */
+export async function validateWritePreconditions(
+  config: LinearMotorConfig,
+  diagnostics: BoardDiagnostics,
+): Promise<PreconditionWarning[]> {
+  if (!isTauriAvailable()) return mockValidatePreconditions(config, diagnostics);
+  return await invoke<PreconditionWarning[]>("validate_write_preconditions", {
+    config,
+    diagnostics,
+  });
+}
+
+/**
+ * Dry-run coil preview: builds the same PhaseCoil set the writer would
+ * produce, and returns a per-layer tally (phase count, track count, via
+ * count). No KiCad roundtrip — safe to call without KiCad running.
+ */
+export async function previewCoils(
+  config: LinearMotorConfig,
+): Promise<CoilPreview> {
+  if (!isTauriAvailable()) return mockPreviewCoils(config);
+  return await invoke<CoilPreview>("preview_coils", { config });
 }
 
 // ---------------------------------------------------------------------------
@@ -292,6 +383,138 @@ function mockStackup(c: LinearMotorConfig): StackupResultDto {
     estimated_force_n: 0.4 * c.magnet_remanence_t * c.max_current_a * lc,
     estimated_dc_resistance_ohm: 1.2,
     notes: ["Mock stackup — backend not connected"],
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Board diagnostics / preconditions / preview mocks (frontend-only dev)
+// ---------------------------------------------------------------------------
+
+/**
+ * Mock board snapshot for `vite dev` (no Tauri). All edge-cut bounds
+ * and net classes are 0 / empty (matching the real backend's
+ * not-yet-queryable placeholders), and `copper_layer_count` mirrors
+ * the user's `num_layers` so the validate/preview flows have
+ * something realistic to check against.
+ */
+function mockBoardDiagnostics(): BoardDiagnostics {
+  return {
+    board_name: "(mock board — backend not connected)",
+    copper_layer_count: 4,
+    board_x_min_mm: 0.0,
+    board_x_max_mm: 0.0,
+    board_y_min_mm: 0.0,
+    board_y_max_mm: 0.0,
+    available_net_classes: [],
+  };
+}
+
+/**
+ * Mock precondition check. In dev mode we don't have a real board to
+ * compare against, so we return an empty list — the UI shows the green
+ * "all clear" state. The real Rust validator runs the rule set from
+ * `pcbstatorgen_rs::kicad::validate_write_preconditions`.
+ */
+function mockValidatePreconditions(
+  _config: LinearMotorConfig,
+  _diagnostics: BoardDiagnostics,
+): PreconditionWarning[] {
+  return [];
+}
+
+/**
+ * Mock coil preview. Builds a per-layer tally that mirrors the shape
+ * the Rust side would produce, so the UI's preview card has something
+ * to render in dev mode.
+ */
+function mockPreviewCoils(config: LinearMotorConfig): CoilPreview {
+  const numLayers = Math.max(1, config.num_layers);
+  // Heuristic segment count: ~2 active conductors per magnet per phase,
+  // plus one end-turn per conductor pair. Matches the mockCoils() shape
+  // closely enough for the "X tracks, Y vias" summary to look real.
+  const segsPerLayer =
+    Math.max(2, config.magnet_count * 2) * 2 - 1; // conductors + end-turns
+  const totalTracks = segsPerLayer * config.phases * numLayers;
+  const layers = Array.from({ length: numLayers }, (_, i) => ({
+    layer_idx: i,
+    phase_count: config.phases,
+    segment_count: segsPerLayer * config.phases,
+    via_count: 0,
+  }));
+  return {
+    num_layers: numLayers,
+    topology: config.coil_topology,
+    layers,
+    total_tracks: totalTracks,
+    total_vias: 0,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// B-field grid (sample_b_field) — WP4 / WP5 flux-viz backend
+// ---------------------------------------------------------------------------
+
+/**
+ * Sample the B-field on an X–Z grid for the active magnet arrangement.
+ * Returns a flat row-major array (Z slow axis) of B-vectors + positions.
+ *
+ * Defaults: 24×12 grid, x = [0, active_area_length_m],
+ * z = [0, air_gap + magnet_height + 2 mm] (a 2 mm window above the magnet top).
+ */
+export async function sampleBField(
+  config: LinearMotorConfig,
+  n_x: number = 24,
+  n_z: number = 12,
+  x_extent_m: [number, number] = [0, config.active_area_length_m],
+  z_extent_m: [number, number] = [
+    0,
+    config.air_gap_m + config.magnet_height_m + 2e-3,
+  ],
+): Promise<BFieldGridDto> {
+  if (!isTauriAvailable()) {
+    return mockBFieldGrid(config, n_x, n_z, x_extent_m, z_extent_m);
+  }
+  return await invoke<BFieldGridDto>("sample_b_field", {
+    config,
+    nX: n_x,
+    nZ: n_z,
+    xExtentM: x_extent_m,
+    zExtentM: z_extent_m,
+  });
+}
+
+function mockBFieldGrid(
+  c: LinearMotorConfig,
+  n_x: number,
+  n_z: number,
+  x_extent_m: [number, number],
+  z_extent_m: [number, number],
+): BFieldGridDto {
+  const xs = Array.from({ length: n_x }, (_, i) =>
+    x_extent_m[0] + (x_extent_m[1] - x_extent_m[0]) * (i / Math.max(n_x - 1, 1)),
+  );
+  const zs = Array.from({ length: n_z }, (_, i) =>
+    z_extent_m[0] + (z_extent_m[1] - z_extent_m[0]) * (i / Math.max(n_z - 1, 1)),
+  );
+  const samples: BFieldGridDto["samples"] = [];
+  for (const z of zs) {
+    for (const x of xs) {
+      // Mock: sinusoidal Bz, magnitude ∝ Br. Sufficient for visualising
+      // arrangement-dependent asymmetry in the absence of a backend.
+      const br = c.magnet_remanence_t;
+      const k = (2 * Math.PI) / Math.max(c.magnet_pitch_m, 1e-6);
+      const bz = 0.4 * br * Math.sin(k * x) * Math.exp(-z / 0.003);
+      const bx = 0.05 * br * Math.cos(k * x) * Math.exp(-z / 0.003);
+      const by = 0.0;
+      const mag = Math.sqrt(bx * bx + by * by + bz * bz);
+      samples.push({ x_m: x, z_m: z, bx_t: bx, by_t: by, bz_t: bz, mag_t: mag });
+    }
+  }
+  return {
+    samples,
+    x_extent_m,
+    z_extent_m,
+    arrangement: c.magnet_arrangement,
   };
 }
 

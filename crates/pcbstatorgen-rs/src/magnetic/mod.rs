@@ -13,4 +13,4 @@ pub mod magnet_model;
 
 pub use coil_model::CoilCurrentModel;
 pub use force_eval::{CommutationMode, ForceEvaluator, ForceResult};
-pub use magnet_model::MagnetArray;
+pub use magnet_model::{BFieldSample2D, MagnetArray};

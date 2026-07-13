@@ -196,19 +196,3 @@ For the default config (12 mm pole pitch, 0.2 mm drill):
 - Thermal: current distributed across 57 parallel paths → no hotspot
 
 ---
-
-## kicad-cli (macOS)
-
-```bash
-# Add to ~/.zshrc
-export PATH="/Applications/KiCad/KiCad.app/Contents/MacOS:$PATH"
-
-# Export Gerbers from a finished board
-kicad-cli pcb export gerbers --output ./gerbers/ board.kicad_pcb
-```
-
----
-
-## License
-
-MIT

@@ -236,11 +236,141 @@ export interface KicadConnection {
 }
 
 export interface KicadWriteResult {
+  /** Number of items we sent to KiCad (tracks + vias). */
+  items_attempted: number;
+  /** Number of items KiCad accepted (ItemStatus.code == ISC_OK). */
   items_created: number;
+  /**
+   * Up to 1000 per-item failure messages from KiCad. Empty when
+   * `items_created === items_attempted`. The full count of failures is
+   * always `items_attempted - items_created` even if only a subset are
+   * listed here.
+   */
+  failures: string[];
+  /**
+   * Summary of all rejection codes from KiCad, sorted by count descending.
+   * Each entry is `[code, count]` where code is the ItemStatusCode
+   * (1=OK, 2=invalid type, 3=existing, 4=non-existent, 5=immutable,
+   * 7=invalid data). Empty when all items succeeded.
+   */
+  failure_summary: [number, number][];
+  /**
+   * Commit ID shown in KiCad's undo stack. `"atomic-commit"` on a real
+   * write, `"(dry run - no commit)"` when `write_coils_to_board` was
+   * called with `dry_run: true`. In dry-run mode `items_created` is
+   * always 0 and `items_attempted` is the number of items the writer
+   * *would* have created.
+   */
   commit_id: string;
 }
 
 export interface KicadPingResult {
   ok: boolean;
   version: string;
+}
+
+// ---------------------------------------------------------------------------
+// Board diagnostics (get_board_diagnostics) — WP-KiCad
+//
+// Mirrors the Rust `BoardDiagnosticsIpc` (`app/src-tauri/src/ipc.rs`).
+// The wire format is `snake_case` (e.g. `copper_layer_count`,
+// `board_x_min_mm`); Tauri's IPC layer converts to/from camelCase on the JS
+// side automatically, so the field names here match the wire format
+// directly.
+// ---------------------------------------------------------------------------
+
+export interface BoardDiagnostics {
+  /** File name of the open board, e.g. `"board.kicad_pcb"`. */
+  board_name: string;
+  /** Number of copper layers enabled on the board. */
+  copper_layer_count: number;
+  /** Bounding box of the board's edge cuts [mm]. 0 if not queryable. */
+  board_x_min_mm: number;
+  /** See [`board_x_min_mm`]. */
+  board_x_max_mm: number;
+  /** See [`board_x_min_mm`]. */
+  board_y_min_mm: number;
+  /** See [`board_x_min_mm`]. */
+  board_y_max_mm: number;
+  /** Net class names defined on the board. Empty if not queryable. */
+  available_net_classes: string[];
+}
+
+/** Severity level for [`PreconditionWarning`]s. */
+export type PreconditionLevel = "info" | "warning" | "error";
+
+/**
+ * One warning / recommendation about the (config, board) pair.
+ *
+ * Produced by `validate_write_preconditions`. The UI is expected to
+ * render `message` verbatim and colour-code by `level`. The `field` is an
+ * optional machine-readable key (`"num_layers"`, `"active_area_length_m"`,
+ * …) the UI can use to highlight the offending input control.
+ */
+export interface PreconditionWarning {
+  level: PreconditionLevel;
+  field: string | null;
+  message: string;
+}
+
+// ---------------------------------------------------------------------------
+// Coil preview (preview_coils) — WP-KiCad
+// ---------------------------------------------------------------------------
+
+/** Per-layer breakdown of the coils that would be written. */
+export interface CoilPreviewLayer {
+  layer_idx: number;
+  /** Number of phase coils on this layer. */
+  phase_count: number;
+  /** Total track segments (sum of `segments.length` across phases). */
+  segment_count: number;
+  /** Inter-layer vias on this layer. */
+  via_count: number;
+}
+
+/**
+ * Dry-run summary of what `write_coils_to_board` would produce.
+ *
+ * Returned by `previewCoils`. Precondition warnings are *not* included
+ * here — the UI calls `validateWritePreconditions` separately for those.
+ */
+export interface CoilPreview {
+  /** Number of layers the writer would iterate over. */
+  num_layers: number;
+  /**
+   * Topology label — `"serpentine" | "sine_wave" | "concentrated" |
+   * "rhombic" | "spiral"`. Matches the core's `topology_label()` output.
+   * String (not enum) on the wire so future topology variants don't break
+   * the contract.
+   */
+  topology: string;
+  /** Per-layer breakdown. */
+  layers: CoilPreviewLayer[];
+  /** Total track segments across all layers. */
+  total_tracks: number;
+  /** Total vias across all layers. */
+  total_vias: number;
+}
+
+// ---------------------------------------------------------------------------
+// B-field grid (sample_b_field) — WP4 / WP5 flux-viz backend
+// ---------------------------------------------------------------------------
+
+export interface BFieldSampleDto {
+  x_m: number;
+  z_m: number;
+  bx_t: number;
+  by_t: number;
+  bz_t: number;
+  mag_t: number;
+}
+
+export interface BFieldGridDto {
+  samples: BFieldSampleDto[];
+  /** [x_min, x_max] [m] */
+  x_extent_m: [number, number];
+  /** [z_min, z_max] [m] */
+  z_extent_m: [number, number];
+  /** PascalCase arrangement label: "Alternating" | "AlternatingBackIron" | "Halbach" | "HalbachBackIron" */
+  arrangement: string;
 }

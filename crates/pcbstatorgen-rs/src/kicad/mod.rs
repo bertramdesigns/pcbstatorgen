@@ -24,10 +24,13 @@
 //! - [`writer`] — pure `coils_to_board_items()` converter
 //! - [`commit`] — [`Commit`] atomic commit handle
 //! - [`board`] — [`BoardHandle`] high-level board operations
+//! - [`diagnostics`] — board-diagnostics + pre-write validation + dry-run
+//!   preview (the "robust KiCad connection" feature).
 
 pub mod board;
 pub mod client;
 pub mod commit;
+pub mod diagnostics;
 pub mod errors;
 pub mod layer_map;
 pub mod writer;
@@ -58,5 +61,9 @@ pub use proto::board::types::{BoardLayer, Net, Track, Via};
 // Phase 7 re-exports.
 pub use board::BoardHandle;
 pub use commit::Commit;
+pub use diagnostics::{
+    get_board_diagnostics, preview_coils, validate_write_preconditions, BoardDiagnostics,
+    CoilPreview, CoilPreviewLayer, PreconditionLevel, PreconditionWarning,
+};
 pub use layer_map::{layer_idx_to_board_layer, m_to_nm, via_pad_diameter_nm};
 pub use writer::coils_to_board_items;
